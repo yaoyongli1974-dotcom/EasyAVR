@@ -47,6 +47,14 @@ type Device struct {
 	GroupID      uint      `gorm:"index" json:"groupId"`
 	NodeID       string    `gorm:"size:64;index" json:"nodeId"` // cluster node assignment
 	Channels     []Channel `json:"channels,omitempty"`
+
+	// GPS position for electronic map (手册 3.3.4).
+	Longitude float64    `json:"longitude"`
+	Latitude  float64    `json:"latitude"`
+	Altitude  float64    `json:"altitude"`
+	Heading   float64    `json:"heading"`           // degrees, 0-360
+	Speed     float64    `json:"speed"`             // km/h
+	GPSTime   *time.Time `json:"gpsTime,omitempty"` // last GPS update time
 }
 
 // Channel is a playable stream belonging to a device (main/sub stream etc).
@@ -69,6 +77,14 @@ type Channel struct {
 	// GB28181 identity when the channel belongs to a registered GB device.
 	GBDeviceID  string `gorm:"size:64;index" json:"gbDeviceId"`
 	GBChannelID string `gorm:"size:64" json:"gbChannelId"`
+
+	// GPS position for electronic map (手册 3.3.4).
+	Longitude float64    `json:"longitude"`
+	Latitude  float64    `json:"latitude"`
+	Altitude  float64    `json:"altitude"`
+	Heading   float64    `json:"heading"`           // degrees, 0-360
+	Speed     float64    `json:"speed"`             // km/h
+	GPSTime   *time.Time `json:"gpsTime,omitempty"` // last GPS update time
 }
 
 // VideoResource is the unified catalog entry of the Video Resource Center.
@@ -132,6 +148,22 @@ type AIEvent struct {
 	// Semantic search vector (JSON float array) produced by an embedding model.
 	Embedding      string `gorm:"type:text" json:"-"`
 	EmbeddingModel string `gorm:"size:64" json:"-"`
+}
+
+// Track stores a GPS position point for device/channel trajectory (手册 3.3.5 轨迹跟踪).
+// Source: device (device-level GPS), channel (channel-level GPS), or manual.
+type Track struct {
+	Base
+	DeviceID  uint      `gorm:"index" json:"deviceId"`
+	ChannelID uint      `gorm:"index" json:"channelId"`
+	Longitude float64   `json:"longitude"`
+	Latitude  float64   `json:"latitude"`
+	Altitude  float64   `json:"altitude"`
+	Heading   float64   `json:"heading"`               // degrees
+	Speed     float64   `json:"speed"`                 // km/h
+	Accuracy  float64   `json:"accuracy"`              // meters, GPS accuracy
+	Source    string    `gorm:"size:16" json:"source"` // device, channel, manual, gb28181
+	TrackTime time.Time `gorm:"index" json:"trackTime"`
 }
 
 // Recording catalogs a recorded video file from the Video Resource Center.

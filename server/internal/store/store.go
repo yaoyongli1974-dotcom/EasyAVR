@@ -113,6 +113,7 @@ func migrate(db *gorm.DB) error {
 		&model.DeviceGroupDevice{},
 		&model.ChannelGroupChannel{},
 		&model.UserGroup{},
+		&model.Track{},
 	)
 }
 

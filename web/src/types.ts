@@ -88,6 +88,12 @@ export interface Channel {
   snapshotInterval: number
   gbDeviceId: string
   gbChannelId: string
+  longitude?: number
+  latitude?: number
+  altitude?: number
+  heading?: number
+  speed?: number
+  gpsTime?: string
 }
 
 export interface Device {
@@ -102,6 +108,12 @@ export interface Device {
   status: string
   groupId: number
   channels?: Channel[]
+  longitude?: number
+  latitude?: number
+  altitude?: number
+  heading?: number
+  speed?: number
+  gpsTime?: string
 }
 
 export interface AIProvider {
@@ -370,4 +382,36 @@ export interface UserGroup {
   permissions: string
   user?: User
   group?: DeviceGroup
+}
+
+export interface GPSPosition {
+  longitude: number
+  latitude: number
+  altitude?: number
+  heading?: number
+  speed?: number
+  gpsTime?: string
+}
+
+export interface TrackPoint {
+  id: number
+  deviceId: number
+  channelId: number
+  longitude: number
+  latitude: number
+  altitude: number
+  heading: number
+  speed: number
+  accuracy: number
+  source: string
+  trackTime: string
+}
+
+export interface TrackStats {
+  pointCount: number
+  totalDistance: number
+  maxSpeed: number
+  minAltitude: number
+  maxAltitude: number
+  durationSec: number
 }

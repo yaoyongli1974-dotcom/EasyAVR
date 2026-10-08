@@ -67,6 +67,16 @@ func (a *App) buildRouter() *gin.Engine {
 	groups.PUT("/user-groups/:id", a.updateUserGroup)
 	groups.DELETE("/user-groups/:id", a.deleteUserGroup)
 
+	// Electronic map & track (手册 3.3.4/3.3.5).
+	mapGroup := authed.Group("/map")
+	mapGroup.Use(a.requireGroupPerm("video")) // reuse video perm for map access
+	mapGroup.GET("/devices", a.listMapDevices)
+	mapGroup.GET("/channels", a.listMapChannels)
+	mapGroup.POST("/devices/:id/gps", a.updateDeviceGPS)
+	mapGroup.POST("/channels/:id/gps", a.updateChannelGPS)
+	mapGroup.GET("/tracks", a.listTracks)
+	mapGroup.GET("/tracks/stats", a.getTrackStats)
+
 	d := authed.Group("/devices")
 	d.Use(a.requireGroupPerm("device"))
 	d.GET("", a.listDevices)

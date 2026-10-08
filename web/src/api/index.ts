@@ -30,6 +30,8 @@ import type {
   Role,
   SearchHit,
   Snapshot,
+  TrackPoint,
+  TrackStats,
   User,
   UserGroup,
   VideoResource,
@@ -282,4 +284,19 @@ export const groupApi = {
   updateUserGroup: (id: number, body: { permissions?: string }) =>
     unwrap<UserGroup>(client.put(`/groups/user-groups/${id}`, body)),
   removeUserGroup: (id: number) => unwrap<{ id: number }>(client.delete(`/groups/user-groups/${id}`)),
+}
+
+export const mapApi = {
+  devices: (params?: Record<string, unknown>) =>
+    unwrap<Device[]>(client.get('/map/devices', { params })),
+  channels: (params?: Record<string, unknown>) =>
+    unwrap<Channel[]>(client.get('/map/channels', { params })),
+  updateDeviceGPS: (id: number, body: { longitude: number; latitude: number; altitude?: number; heading?: number; speed?: number; gpsTime?: string; accuracy?: number; source?: string }) =>
+    unwrap<Device>(client.post(`/map/devices/${id}/gps`, body)),
+  updateChannelGPS: (id: number, body: { longitude: number; latitude: number; altitude?: number; heading?: number; speed?: number; gpsTime?: string; accuracy?: number; source?: string }) =>
+    unwrap<Channel>(client.post(`/map/channels/${id}/gps`, body)),
+  tracks: (params?: { deviceId?: number; channelId?: number; start?: string; end?: string; limit?: number }) =>
+    unwrap<TrackPoint[]>(client.get('/map/tracks', { params })),
+  trackStats: (params?: { deviceId?: number; channelId?: number; start?: string; end?: string }) =>
+    unwrap<TrackStats>(client.get('/map/tracks/stats', { params })),
 }

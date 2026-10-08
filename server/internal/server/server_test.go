@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/store"
@@ -891,5 +892,132 @@ func TestPhaseTwoEndpoints(t *testing.T) {
 	json.Unmarshal(gbResp.Data, &gbCfg)
 	if gbCfg.Enabled {
 		t.Fatal("expected GB disabled in test config")
+	}
+}
+
+// TestMapAndTrack covers electronic map device listing, GPS updates, and track recording.
+func TestMapAndTrack(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Create a device for map tests
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-map", "protocol": "rtsp", "ip": "10.0.0.40",
+	}, &devResp)
+	var dev struct {
+		ID       uint `json:"id"`
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	channelID := dev.Channels[0].ID
+
+	// 1. List map devices (empty initially)
+	var mapResp apiResp
+	doJSON(t, http.MethodGet, B+"/map/devices", admin, nil, &mapResp)
+	var mapDevs []struct {
+		ID        uint    `json:"id"`
+		Name      string  `json:"name"`
+		Longitude float64 `json:"longitude"`
+		Latitude  float64 `json:"latitude"`
+	}
+	json.Unmarshal(mapResp.Data, &mapDevs)
+	if len(mapDevs) != 0 {
+		t.Fatalf("expected 0 map devices, got %d", len(mapDevs))
+	}
+
+	// 2. Update device GPS
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/map/devices/%d/gps", B, dev.ID), admin, map[string]any{
+		"longitude": 116.397, "latitude": 39.909, "altitude": 50, "heading": 90, "speed": 60, "source": "manual",
+	}, &mapResp)
+	if mapResp.Code != 0 {
+		t.Fatalf("update device GPS failed: %+v", mapResp)
+	}
+
+	// 3. Verify device appears in map list
+	doJSON(t, http.MethodGet, B+"/map/devices", admin, nil, &mapResp)
+	json.Unmarshal(mapResp.Data, &mapDevs)
+	if len(mapDevs) != 1 || mapDevs[0].ID != dev.ID {
+		t.Fatalf("expected 1 map device, got %d", len(mapDevs))
+	}
+	if mapDevs[0].Longitude != 116.397 || mapDevs[0].Latitude != 39.909 {
+		t.Fatalf("GPS not persisted: %+v", mapDevs[0])
+	}
+
+	// 4. Update channel GPS
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/map/channels/%d/gps", B, channelID), admin, map[string]any{
+		"longitude": 116.398, "latitude": 39.910, "source": "channel",
+	}, &mapResp)
+	if mapResp.Code != 0 {
+		t.Fatalf("update channel GPS failed: %+v", mapResp)
+	}
+
+	// 5. List map channels
+	doJSON(t, http.MethodGet, B+"/map/channels", admin, nil, &mapResp)
+	var mapChs []struct {
+		ID        uint    `json:"id"`
+		Longitude float64 `json:"longitude"`
+		Latitude  float64 `json:"latitude"`
+	}
+	json.Unmarshal(mapResp.Data, &mapChs)
+	if len(mapChs) != 1 || mapChs[0].ID != channelID {
+		t.Fatalf("expected 1 map channel, got %d", len(mapChs))
+	}
+
+	// 6. Add multiple track points for the device
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		ts := now.Add(time.Duration(i) * time.Minute)
+		doJSON(t, http.MethodPost, fmt.Sprintf("%s/map/devices/%d/gps", B, dev.ID), admin, map[string]any{
+			"longitude": 116.397 + float64(i)*0.001,
+			"latitude":  39.909 + float64(i)*0.001,
+			"speed":     10 + float64(i),
+			"gpsTime":   ts.Format(time.RFC3339),
+			"source":    "device",
+		}, &mapResp)
+		if mapResp.Code != 0 {
+			t.Fatalf("add track point %d failed: %+v", i, mapResp)
+		}
+	}
+
+	// 7. Query tracks
+	doJSON(t, http.MethodGet, B+"/map/tracks", admin,
+		map[string]string{"deviceId": strconv.FormatUint(uint64(dev.ID), 10), "limit": "10"}, &mapResp)
+	var tracks []struct {
+		DeviceID  uint    `json:"deviceId"`
+		Longitude float64 `json:"longitude"`
+		Latitude  float64 `json:"latitude"`
+		Speed     float64 `json:"speed"`
+	}
+	json.Unmarshal(mapResp.Data, &tracks)
+	// 1 initial device GPS + 5 loop + 1 channel GPS (same deviceId) = 7
+	if len(tracks) != 7 {
+		t.Fatalf("expected 7 track points, got %d", len(tracks))
+	}
+
+	// 8. Track stats
+	doJSON(t, http.MethodGet, B+"/map/tracks/stats", admin,
+		map[string]string{"deviceId": strconv.FormatUint(uint64(dev.ID), 10)}, &mapResp)
+	var stats struct {
+		PointCount    int     `json:"pointCount"`
+		TotalDistance float64 `json:"totalDistance"`
+		MaxSpeed      float64 `json:"maxSpeed"`
+		DurationSec   int64   `json:"durationSec"`
+	}
+	json.Unmarshal(mapResp.Data, &stats)
+	if stats.PointCount != 7 {
+		t.Fatalf("expected 7 track points in stats, got %d", stats.PointCount)
+	}
+	if stats.TotalDistance <= 0 {
+		t.Fatalf("expected positive distance, got %f", stats.TotalDistance)
+	}
+	if stats.MaxSpeed < 14 { // last point had speed 14
+		t.Fatalf("expected max speed >= 14, got %f", stats.MaxSpeed)
+	}
+	if stats.DurationSec < 4*60 { // 4 minutes between first and last
+		t.Fatalf("expected duration >= 240s, got %d", stats.DurationSec)
 	}
 }

@@ -29,6 +29,7 @@ const router = createRouter({
         { path: 'apikeys', name: 'apikeys', component: () => import('../views/ApiKeys.vue') },
         { path: 'users', name: 'users', component: () => import('../views/Users.vue') },
         { path: 'groups', name: 'groups', component: () => import('../views/Groups.vue') },
+        { path: 'map', name: 'map', component: () => import('../views/Map.vue') },
       ],
     },
   ],

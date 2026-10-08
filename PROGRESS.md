@@ -215,3 +215,28 @@
   3. 运维审计（操作记录/日志）。
   4. 告警预案模板、VQD 视频质量诊断、全局功能搜索、播放诊断。
   5. EHOME/ISUP（待 SDK/协议）；pgvector HNSW。
+
+### 2026-10-08（对照 EasyCVR 手册：设备分组 3.2.4 + 按分组授权 3.4）
+- **已完成**：按手册 3.2.4「设备分组」与 3.4「用户管理-按分组授权」实现分组体系。
+  - 后端：`DeviceGroup`（多层级，`parent_id` + `path` 祖先路径）、`DeviceGroupDevice`/`ChannelGroupChannel`（设备/通道多对多绑定）、`UserGroup`（用户-分组关联，含可选权限清单，空=继承角色）。
+  - 中间件 `requireGroupPerm(perm)`：先查角色权限，再查用户所在分组权限；应用到 `/devices`（需 `device` 权限）与 `/channels`（需 `video` 权限）。
+  - 接口：`GET/POST/PUT/DELETE /groups`、`POST /groups/devices/bind|unbind`、`GET /groups/:id/devices`、同理 channels、`GET/POST/PUT/DELETE /groups/user-groups`。
+  - 前端：`Groups.vue`（左侧树形分组，右侧 Tab：基本信息/绑定设备/绑定通道/用户权限）。
+  - 测试：`TestGroupManagement` 覆盖 CRUD、层级、绑定、用户-分组授权、组隔离（viewer 无分组权限被拒、有权限放行、跨组被拒）。
+- **当前状态**：完成
+- **下一步（对照手册 3.x 路线）**：
+  1. 电子地图/轨迹跟踪（通道经纬度，3.3.4/3.3.5）。
+  2. 运维审计（操作记录/日志，3.7.5）。
+  3. 告警预案模板（3.7.3.2）、VQD 视频质量诊断（3.6.3）、全局功能搜索（3.8）、播放诊断（3.3.1）。
+
+### 2026-10-08（对照 EasyCVR 手册：电子地图 3.3.4 + 轨迹跟踪 3.3.5）
+- **已完成**：按手册 3.3.4「电子地图」与 3.3.5「轨迹跟踪」实现地图与轨迹功能。
+  - 后端：`Device`/`Channel` 新增 GPS 字段（经度/纬度/海拔/航向/速度/时间），`Track` 模型存储轨迹点（设备/通道/来源/精度/时间）。
+  - 接口：`GET /map/devices|channels`（带坐标的设备/通道）、`POST /map/devices|channels/:id/gps`（更新 GPS 并自动记录轨迹）、`GET /map/tracks`（按设备/通道/时间范围查询轨迹）、`GET /map/tracks/stats`（里程/最高速/时长/海拔统计）。
+  - 权限：复用 `requireGroupPerm("video")` 保护地图相关接口。
+  - 前端：`Map.vue` 基于 Leaflet，支持 OSM/高德卫星/高德路网三图层切换，左侧设备树（按分组），地图标记设备/通道，轨迹回放与统计弹窗，支持手动设置 GPS。
+  - 测试：`TestMapAndTrack` 覆盖设备/通道 GPS 更新、轨迹点记录、查询与统计验证（里程/速度/时长/海拔）。
+- **当前状态**：完成
+- **下一步（对照手册 3.x 路线）**：
+  1. 运维审计（操作记录/日志，3.7.5）。
+  2. 告警预案模板（3.7.3.2）、VQD 视频质量诊断（3.6.3）、全局功能搜索（3.8）、播放诊断（3.3.1）。
