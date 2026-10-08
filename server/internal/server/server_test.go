@@ -2385,3 +2385,38 @@ func TestPlatformConfig(t *testing.T) {
 		t.Fatalf("GB should be disabled and stopped: %s", cfgResp.Data)
 	}
 }
+
+// TestPlatformConfigGB35114Listen verifies the GB35114 secure-SIP listen address
+// is configurable at runtime and that enabling without a port warns instead of
+// silently failing.
+func TestPlatformConfigGB35114Listen(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	var up apiResp
+	doJSON(t, http.MethodPut, B+"/config/platform", admin, map[string]any{"gb35114Enabled": true}, &up)
+	var w struct {
+		Warnings []string `json:"warnings"`
+	}
+	json.Unmarshal(up.Data, &w)
+	if len(w.Warnings) == 0 {
+		t.Fatalf("expected warning when no listen address configured: %s", up.Data)
+	}
+
+	if code := doJSON(t, http.MethodPut, B+"/config/platform", admin, map[string]any{"gb35114SipListen": ":15061"}, &up); code != http.StatusOK {
+		t.Fatalf("set listen: %d", code)
+	}
+	var cfg apiResp
+	doJSON(t, http.MethodGet, B+"/config/platform", admin, nil, &cfg)
+	var data struct {
+		GB35114 struct {
+			SipListen  string `json:"sipListen"`
+			Configured bool   `json:"configured"`
+		} `json:"gb35114"`
+	}
+	json.Unmarshal(cfg.Data, &data)
+	if data.GB35114.SipListen != ":15061" || !data.GB35114.Configured {
+		t.Fatalf("listen not persisted: %s", cfg.Data)
+	}
+}

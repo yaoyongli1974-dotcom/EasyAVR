@@ -125,6 +125,16 @@ func (a *App) seedPlatformSettings() {
 			a.db.Create(&model.PlatformSetting{Key: k, Value: strconv.FormatBool(v)})
 		}
 	}
+	// String settings seeded from env defaults (editable at runtime).
+	strDefaults := map[string]string{
+		"gb35114_sip_listen": a.cfg.GB35114.SIPListen,
+	}
+	for k, v := range strDefaults {
+		var s model.PlatformSetting
+		if err := a.db.Where("key = ?", k).First(&s).Error; err != nil {
+			a.db.Create(&model.PlatformSetting{Key: k, Value: v})
+		}
+	}
 }
 
 // Engine exposes the underlying gin engine (used in tests).
@@ -157,8 +167,8 @@ func (a *App) Run() error {
 			log.Printf("[easyavr] EHOME server disabled: %v", err)
 		}
 	}
-	if a.settingBool("gb35114_enabled", a.cfg.GB35114.Enabled) && a.cfg.GB35114.SIPListen != "" {
-		if err := a.startSecureSIP(); err != nil {
+	if a.settingBool("gb35114_enabled", a.cfg.GB35114.Enabled) && a.gb35114Listen() != "" {
+		if err := a.startSecureSIP(a.gb35114Listen()); err != nil {
 			log.Printf("[easyavr] GB35114 secure SIP disabled: %v", err)
 		}
 	}
@@ -168,7 +178,7 @@ func (a *App) Run() error {
 
 // startSecureSIP launches the GB35114 GM/T 0024 secure SIP listener using the
 // platform dual SM2 certificate.
-func (a *App) startSecureSIP() error {
+func (a *App) startSecureSIP(listen string) error {
 	pair, err := a.gb35114.PlatformTLS()
 	if err != nil {
 		return err
@@ -178,7 +188,7 @@ func (a *App) startSecureSIP() error {
 		return err
 	}
 	return a.gb.StartTLS(gb28181.TLSConfig{
-		Listen:      a.cfg.GB35114.SIPListen,
+		Listen:      listen,
 		SignCertPEM: pair.SignCertPEM, SignKeyPEM: pair.SignKeyPEM,
 		EncCertPEM: pair.EncCertPEM, EncKeyPEM: pair.EncKeyPEM,
 		CAPool: pool, RequireClientCert: a.cfg.GB35114.SIPRequireClient,

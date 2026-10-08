@@ -413,3 +413,14 @@
 - **验证通过**：`gofmt -l` 无输出、`go vet ./...`、`go test ./...`、`web npm run build` 均通过。
 - **当前状态**：完成（尚未提交 git）
 - **下一步**：将本次「平台配置」与前述 8 批一并提交 git；可选扩展：内核/地图/展示信息等更多可视化配置项（当前多为环境变量只读展示）。
+
+### 2026-10-08（修复：GB35114 安全 SIP 监听可运行时配置）
+- **背景**：开启 GB35114 开关时提示「未配置 EASYAVR_GB35114_SIP_LISTEN，安全 SIP 监听未启动」，该项此前只能由环境变量配置并需重启。
+- **已完成**：
+  - `startSecureSIP(listen)` 改为接收监听地址参数；新增 `gb35114Listen()`（读取持久化设置 `gb35114_sip_listen`，缺省回落环境变量）。
+  - `seedPlatformSettings` 首次启动写入环境变量默认值；`GET /config/platform` 返回 `sipListen` 与 `configured`。
+  - `PUT /config/platform` 新增 `gb35114SipListen`：保存后立即停止并按新地址重启 GB35114 TLS 监听（开关不变时也生效）；地址为空且开启时返回明确 warning。
+  - 前端「平台配置」页新增「GB35114 安全 SIP 端口」输入框 + 保存并应用。
+  - 测试：新增 `TestPlatformConfigGB35114Listen`（无端口开启→warning；设置端口→持久化并在配置中回显）。
+- **验证通过**：`gofmt -l`、`go vet ./...`、`go test ./...`、`web npm run build` 均通过。
+- **当前状态**：完成，已提交并推送。

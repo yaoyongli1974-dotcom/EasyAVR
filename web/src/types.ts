@@ -654,7 +654,7 @@ export interface PlayTokenResult {
 export interface PlatformConfig {
   gb: { enabled: boolean; running: boolean; listen: string; id: string; realm: string; password: string; rtpIp: string }
   ehome: { enabled: boolean; running: boolean; cmsListen: string; smsListen: string; publicIp: string }
-  gb35114: { enabled: boolean; running: boolean; sipListen: string; requireClient: boolean; certDir: string }
+  gb35114: { enabled: boolean; running: boolean; sipListen: string; configured: boolean; requireClient: boolean; certDir: string }
   playback: { auth: boolean; tokenTtlMin: number; whitelist: string[] }
   monitorSec: number
 }
@@ -663,6 +663,7 @@ export interface PlatformConfigUpdate {
   gbEnabled?: boolean
   ehomeEnabled?: boolean
   gb35114Enabled?: boolean
+  gb35114SipListen?: string
 }
 
 export interface DeviceGroupDevice {

@@ -83,7 +83,8 @@ EasyAVR 是一个 **AI 原生的视频融合与智能视频资源管理平台**�
   蓝屏、遮挡、马赛克、花屏/噪声、冻结、抖动等质量问题；`GET /channels/:id/vqd` 返回指标与问题，
   `record=1` 且存在告警级问题时生成 `AIEvent(kind=vqd)` 交由 `eventSink` 分发索引与通知。
 - **运行时平台配置**：`PlatformSetting` 持久化开关，`GET/PUT /config/platform`（管理员）可即时启停
-  GB28181/EHOME/GB35114 信令监听（`gb28181.Server` 支持 Start/Stop/StopTLS 生命周期），无需重启；
+  GB28181/EHOME/GB35114 信令监听（`gb28181.Server` 支持 Start/Stop/StopTLS 生命周期），并可在运行时
+  修改 GB35114 安全 SIP 监听地址（`gb35114_sip_listen`，保存即重启该 TLS 监听），均无需重启进程；
   环境变量作为首次启动的默认值，其余播放/运维参数仍由环境变量决定。
 - **注册黑白名单**：`internal/access` 统一判定 GB28181/EHOME 注册——黑名单按「已填字段全部匹配」拦截，
   白名单在该协议存在启用规则时要求命中；`gb28181.handleRegister` 与 EHOME `udpBackend.identify` 均调用。

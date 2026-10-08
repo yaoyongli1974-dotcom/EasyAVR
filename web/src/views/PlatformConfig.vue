@@ -32,6 +32,11 @@
           </el-tag>
           <span class="hint">安全 SIP {{ cfg?.gb35114.sipListen || '（未配置端口）' }}</span>
         </el-form-item>
+        <el-form-item label="GB35114 安全 SIP 端口">
+          <el-input v-model="gb35114Listen" placeholder=":5061" style="width: 200px" />
+          <el-button style="margin-left: 8px" :loading="savingListen" @click="saveListen">保存并应用</el-button>
+          <span class="hint">GM/T 0024 TLS 监听地址；保存后立即重启该监听，无需重启进程</span>
+        </el-form-item>
       </el-form>
     </el-card>
 
@@ -56,13 +61,30 @@ import type { PlatformConfig, PlatformConfigUpdate } from '../types'
 
 const cfg = ref<PlatformConfig | null>(null)
 const loading = ref(false)
+const savingListen = ref(false)
+const gb35114Listen = ref('')
 
 async function load() {
   loading.value = true
   try {
     cfg.value = await configApi.platform()
+    gb35114Listen.value = cfg.value.gb35114.sipListen || ''
   } finally {
     loading.value = false
+  }
+}
+
+async function saveListen() {
+  savingListen.value = true
+  try {
+    const res = await configApi.updatePlatform({ gb35114SipListen: gb35114Listen.value.trim() })
+    if (res.warnings?.length) ElMessage.warning(res.warnings.join('；'))
+    else ElMessage.success('已应用')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '应用失败')
+  } finally {
+    savingListen.value = false
+    load()
   }
 }
 
