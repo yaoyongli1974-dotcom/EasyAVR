@@ -188,3 +188,8 @@
   1. 提供 `HCECMS.h` 等头文件与 `.so`：在 `sdk_enabled.go` 中绑定 `NET_ECMS_*`、注册 Register/Keepalive/Alarm/Stream 回调，落库设备与媒体通道。
   2. 若提供官方协议 PDF，则改为纯 Go 编解码。
   3. 视需要提交 git 仓库。
+
+### 2026-10-08（git 首次提交）
+- **已完成**：仓库首次提交 `08e409d`，122 个文件、19195 行，工作区干净。提交前已确认 `.gitignore` 排除 `server/data/`、`server/bin/`、`web/dist/`、`web/node_modules/`、`*.db`、`.env`、日志与 ZLM 录像；无密钥/证书/二进制泄漏。
+- **当前状态**：完成
+- **下一步**：EHOME/ISUP（待 SDK/协议）；pgvector HNSW；开放 API 审计筛选/导出。
