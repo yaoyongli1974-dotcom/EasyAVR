@@ -68,7 +68,9 @@ EasyAVR 不是一个 EasyCVR 的克隆，而是一个 **AI 原生的视频融合
 
 | 分组 | 端点 |
 |---|---|
-| 认证 | `POST /auth/login`、`GET /auth/profile` |
+| 认证 | `POST /auth/login`、`GET /auth/profile`、`POST /auth/password` |
+| 用户 | `GET/POST /users`、`PUT/DELETE /users/:id`（管理员） |
+| 角色 | `GET/POST /roles`、`PUT/DELETE /roles/:id`（管理员，含权限清单） |
 | 设备 | `GET/POST /devices`、`GET/PUT/DELETE /devices/:id`、`GET/POST /devices/:id/channels` |
 | 主动发现 | `POST /discovery/scan`（ONVIF WS-Discovery / 网段端口扫描） |
 | ONVIF | `POST /onvif/probe`（设备信息 + 媒体配置 + RTSP 地址）、`POST /onvif/import`（按媒体配置自动建主/子码流通道） |
@@ -106,4 +108,12 @@ EasyAVR 不是一个 EasyCVR 的克隆，而是一个 **AI 原生的视频融合
 - **三期（进行中）**：
   - 已完成：多屏播放、告警通知（Webhook/邮件）、语义检索（向量 + 关键词回退）、集群（节点注册/心跳/**设备级最少负载调度**）、GB28181 级联（向上注册）、GA/T1400 VIID 入库与**上下级级联/订阅（订阅自动续订 + 全量/增量同步）**、EHOME/ISUP 接入端点、**GB35114 国密（SM2 平台 CA + 设备证书签发/登记/校验/吊销 + SM3 + GM/T 0024 安全 SIP/TLS 双向认证，gmsm/gmtls）**、**开放层第三方/APP API 密钥鉴权（`/open/*`，scope + 限速 + 每日配额 + 审计，含 OpenAPI 文档）**。
   - 待完善：EHOME 完整二进制编解码需对接厂商协议规范。
+  - **用户与角色（RBAC）**：`User` + `Role`（含权限清单）管理页；用户 CRUD、角色 CRUD、修改密码、管理员保护；非管理员按角色权限访问（`requirePerm`），管理员专属用户/角色管理。
+- **对照 EasyCVR 手册的后续路线（`docs/architecture.md`）**：
+  - 设备分组（多层级，绑定设备/通道）与按分组授权（手册 3.2.4 / 3.4）。
+  - 电子地图与轨迹跟踪（通道经纬度 + 地图，手册 3.3.4 / 3.3.5）。
+  - 运维审计（系统/信令日志、操作记录，手册 3.7.5）。
+  - 告警预案模板（级别/方式/类型/事件，手册 3.7.3.2）。
+  - 视频质量诊断 VQD（任务类型 `vqd`，手册 3.6.3）。
+  - 全局功能搜索（命令面板，手册 3.8）、播放诊断（3.3.1）。
   - 关键配置：`EASYAVR_GB35114_SIP_LISTEN=:5061` 启用国密安全 SIP（`EASYAVR_GB35114_SIP_REQUIRE_CLIENT=true` 强制双向证书认证）。

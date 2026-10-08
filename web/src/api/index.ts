@@ -24,6 +24,7 @@ import type {
   Page,
   Recording,
   RecordingPlan,
+  Role,
   SearchHit,
   Snapshot,
   User,
@@ -36,6 +37,26 @@ export const authApi = {
   login: (username: string, password: string) =>
     unwrap<{ token: string; user: User }>(client.post('/auth/login', { username, password })),
   profile: () => unwrap<User>(client.get('/auth/profile')),
+}
+
+export const userApi = {
+  list: (params?: Record<string, unknown>) => unwrap<User[]>(client.get('/users', { params })),
+  create: (body: { username: string; nickname?: string; password: string; role: string; enabled?: boolean }) =>
+    unwrap<User>(client.post('/users', body)),
+  update: (id: number, body: { nickname?: string; role?: string; enabled?: boolean; password?: string }) =>
+    unwrap<User>(client.put(`/users/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/users/${id}`)),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    unwrap<{ id: number }>(client.post('/auth/password', { oldPassword, newPassword })),
+}
+
+export const roleApi = {
+  list: () => unwrap<Role[]>(client.get('/roles')),
+  create: (body: { name: string; description?: string; permissions?: string }) =>
+    unwrap<Role>(client.post('/roles', body)),
+  update: (id: number, body: { name?: string; description?: string; permissions?: string }) =>
+    unwrap<Role>(client.put(`/roles/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/roles/${id}`)),
 }
 
 export const deviceApi = {

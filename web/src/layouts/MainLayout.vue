@@ -35,6 +35,7 @@
           <el-menu-item index="/notifications">告警通知</el-menu-item>
           <el-menu-item index="/cluster">集群</el-menu-item>
           <el-menu-item index="/apikeys">开放 API</el-menu-item>
+          <el-menu-item index="/users">用户与角色</el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -44,6 +45,7 @@
         <div class="user">
           <el-tag size="small" type="info">{{ auth.user?.role || 'user' }}</el-tag>
           <span class="name">{{ auth.user?.nickname || auth.user?.username }}</span>
+          <el-button link type="primary" @click="pwdVisible = true">修改密码</el-button>
           <el-button link type="primary" @click="logout">退出</el-button>
         </div>
       </el-header>
@@ -51,21 +53,56 @@
         <router-view />
       </el-main>
     </el-container>
+
+    <el-dialog v-model="pwdVisible" title="修改密码" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="原密码"><el-input v-model="pwdForm.oldPassword" type="password" show-password /></el-form-item>
+        <el-form-item label="新密码"><el-input v-model="pwdForm.newPassword" type="password" show-password /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="changePwd">保存</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { userApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+const pwdVisible = ref(false)
+const pwdSaving = ref(false)
+const pwdForm = reactive({ oldPassword: '', newPassword: '' })
+
 onMounted(() => {
   if (!auth.user) auth.loadProfile().catch(() => {})
 })
+
+async function changePwd() {
+  if (!pwdForm.newPassword) {
+    ElMessage.warning('请输入新密码')
+    return
+  }
+  pwdSaving.value = true
+  try {
+    await userApi.changePassword(pwdForm.oldPassword, pwdForm.newPassword)
+    ElMessage.success('密码已修改')
+    pwdVisible.value = false
+    Object.assign(pwdForm, { oldPassword: '', newPassword: '' })
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '修改失败')
+  } finally {
+    pwdSaving.value = false
+  }
+}
 
 function logout() {
   auth.logout()

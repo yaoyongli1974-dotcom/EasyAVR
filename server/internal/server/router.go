@@ -32,6 +32,22 @@ func (a *App) buildRouter() *gin.Engine {
 	authed.Use(a.authRequired())
 
 	authed.GET("/auth/profile", a.profile)
+	authed.POST("/auth/password", a.changePassword)
+
+	// User and role management is restricted to administrators.
+	users := authed.Group("/users")
+	users.Use(a.adminRequired())
+	users.GET("", a.listUsers)
+	users.POST("", a.createUser)
+	users.PUT("/:id", a.updateUser)
+	users.DELETE("/:id", a.deleteUser)
+
+	roles := authed.Group("/roles")
+	roles.Use(a.adminRequired())
+	roles.GET("", a.listRoles)
+	roles.POST("", a.createRole)
+	roles.PUT("/:id", a.updateRole)
+	roles.DELETE("/:id", a.deleteRole)
 
 	d := authed.Group("/devices")
 	d.GET("", a.listDevices)
@@ -93,6 +109,7 @@ func (a *App) buildRouter() *gin.Engine {
 	ga1400Group.GET("/subscriptions", a.listGASubscriptions)
 
 	gb35114Group := authed.Group("/gb35114")
+	gb35114Group.Use(a.requirePerm("config"))
 	gb35114Group.GET("/config", a.gb35114Config)
 	gb35114Group.POST("/platform-cert", a.gb35114GenerateCert)
 	gb35114Group.POST("/sign-csr", a.gb35114SignCSR)
@@ -131,6 +148,7 @@ func (a *App) buildRouter() *gin.Engine {
 	aiGroup.POST("/search", a.semanticSearch)
 
 	notifyGroup := authed.Group("/notify")
+	notifyGroup.Use(a.requirePerm("notify"))
 	notifyGroup.GET("/channels", a.listNotifyChannels)
 	notifyGroup.POST("/channels", a.createNotifyChannel)
 	notifyGroup.PUT("/channels/:id", a.updateNotifyChannel)
@@ -142,11 +160,13 @@ func (a *App) buildRouter() *gin.Engine {
 	notifyGroup.DELETE("/rules/:id", a.deleteNotifyRule)
 
 	clusterGroup := authed.Group("/cluster")
+	clusterGroup.Use(a.requirePerm("cluster"))
 	clusterGroup.GET("/nodes", a.clusterNodes)
 	clusterGroup.GET("/stats", a.clusterStats)
 	clusterGroup.GET("/config", a.clusterConfig)
 
 	apiKeys := authed.Group("/apikeys")
+	apiKeys.Use(a.requirePerm("apikey"))
 	apiKeys.GET("", a.listAPIKeys)
 	apiKeys.POST("", a.createAPIKey)
 	apiKeys.GET("/stats", a.apiKeyStats)

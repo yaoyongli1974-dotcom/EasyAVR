@@ -12,6 +12,14 @@ export interface User {
   enabled: boolean
 }
 
+export interface Role {
+  id: number
+  name: string
+  description: string
+  permissions: string
+  builtin: boolean
+}
+
 export interface DiscoveredDevice {
   ip: string
   port: number

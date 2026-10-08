@@ -199,3 +199,19 @@
 - **当前状态**：完成
 - **安全提示**：本次使用的 PAT 已在聊天中明文出现，务必尽快在 GitHub 撤销/轮换；公开仓库中 `EASYAVR_JWT_SECRET`、管理员账号、ZLM secret、Postgres 口令均为**开发默认值**，生产部署必须修改。
 - **下一步**：EHOME/ISUP（待 SDK/协议）；pgvector HNSW；开放 API 审计筛选/导出。
+
+### 2026-10-08（对照 EasyCVR 手册：用户与角色 RBAC）
+- **已完成**：按 EasyCVR 使用手册 3.4「用户管理」补齐 RBAC。
+  - 新增 `Role` 模型（名称/描述/权限清单/内置），启动种子内置角色 admin/operator/viewer。
+  - 用户管理：`GET/POST /users`、`PUT/DELETE /users/:id`（管理员）；创建/编辑/删除、重置密码、启用停用；保护：不能删除/禁用当前用户、不能删除或降级最后一个管理员。
+  - 角色管理：`GET/POST /roles`、`PUT/DELETE /roles/:id`（管理员）；内置角色不可删除/改名、被用户占用的角色不可删除。
+  - 自助改密 `POST /auth/password`；中间件 `adminRequired` 与 `requirePerm(perm)`（管理员或角色权限命中）；notify/cluster/apikeys/gb35114 组按权限收敛。
+  - 前端「用户与角色」页（用户/角色两页签）+ 顶栏「修改密码」。
+  - 验证：`go test ./...`（新增用户/角色/权限/改密/最后管理员保护测试）、`go vet`、前端类型检查与构建。
+- **当前状态**：完成
+- **下一步（对照手册 3.x 的路线）**：
+  1. 设备分组（多层级 + 绑定设备/通道 + 按分组授权）。
+  2. 电子地图/轨迹跟踪（通道经纬度）。
+  3. 运维审计（操作记录/日志）。
+  4. 告警预案模板、VQD 视频质量诊断、全局功能搜索、播放诊断。
+  5. EHOME/ISUP（待 SDK/协议）；pgvector HNSW。

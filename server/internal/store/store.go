@@ -88,6 +88,7 @@ func openPostgres(dsn string) (*gorm.DB, error) {
 func migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.User{},
+		&model.Role{},
 		&model.Device{},
 		&model.Channel{},
 		&model.VideoResource{},
@@ -111,8 +112,11 @@ func migrate(db *gorm.DB) error {
 	)
 }
 
-// Seed creates the initial admin account when the user table is empty.
+// Seed creates the initial admin account and built-in roles when empty.
 func Seed(db *gorm.DB, username, password string) error {
+	if err := seedRoles(db); err != nil {
+		return err
+	}
 	var count int64
 	if err := db.Model(&model.User{}).Count(&count).Error; err != nil {
 		return err
@@ -135,5 +139,28 @@ func Seed(db *gorm.DB, username, password string) error {
 		return err
 	}
 	log.Printf("[seed] created default admin user %q", username)
+	return nil
+}
+
+// seedRoles creates the built-in roles when the role table is empty.
+func seedRoles(db *gorm.DB) error {
+	var count int64
+	if err := db.Model(&model.Role{}).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	roles := []model.Role{
+		{Name: "admin", Description: "系统管理员，拥有全部权限", Permissions: "*", Builtin: true},
+		{Name: "operator", Description: "运维人员，可管理设备/视频/AI，不能管理用户与平台配置",
+			Permissions: "device,video,recording,snapshot,ai,event,search", Builtin: true},
+		{Name: "viewer", Description: "访客，仅可观看视频与查看事件",
+			Permissions: "video,event,search", Builtin: true},
+	}
+	if err := db.Create(&roles).Error; err != nil {
+		return err
+	}
+	log.Printf("[seed] created %d built-in roles", len(roles))
 	return nil
 }

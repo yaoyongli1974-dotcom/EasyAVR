@@ -19,6 +19,17 @@ type User struct {
 	Enabled      bool   `gorm:"default:true" json:"enabled"`
 }
 
+// Role groups permissions assigned to users. Permissions is a comma-separated
+// list of feature keys (e.g. "device,video,ai,config"); the built-in "admin"
+// role always has full access.
+type Role struct {
+	Base
+	Name        string `gorm:"uniqueIndex;size:32" json:"name"`
+	Description string `gorm:"size:255" json:"description"`
+	Permissions string `gorm:"size:512" json:"permissions"`
+	Builtin     bool   `gorm:"default:false" json:"builtin"`
+}
+
 // Device is a logical/physical video source endpoint.
 // Protocol examples: rtsp, rtmp, onvif, gb28181, ehome, hikvision, dahua.
 // AccessMode: pull (platform pulls stream), push (device pushes), register (device registers to platform).

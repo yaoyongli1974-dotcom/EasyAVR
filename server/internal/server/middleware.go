@@ -153,6 +153,55 @@ func hasScope(scopes, want string) bool {
 	return false
 }
 
+// adminRequired allows only the built-in admin role.
+func (a *App) adminRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := currentClaims(c)
+		if claims == nil || claims.Role != "admin" {
+			fail(c, http.StatusForbidden, "需要管理员权限")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// requirePerm allows the admin role or any role whose permission list contains
+// the requested key ("*" means all).
+func (a *App) requirePerm(perm string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := currentClaims(c)
+		if claims == nil {
+			fail(c, http.StatusUnauthorized, "unauthenticated")
+			c.Abort()
+			return
+		}
+		if claims.Role == "admin" {
+			c.Next()
+			return
+		}
+		var role model.Role
+		if err := a.db.Where("name = ?", claims.Role).First(&role).Error; err == nil && hasPerm(role.Permissions, perm) {
+			c.Next()
+			return
+		}
+		fail(c, http.StatusForbidden, "权限不足："+perm)
+		c.Abort()
+	}
+}
+
+func hasPerm(list, want string) bool {
+	if strings.TrimSpace(list) == "*" {
+		return true
+	}
+	for _, p := range strings.Split(list, ",") {
+		if strings.TrimSpace(p) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // currentClaims returns the authenticated user's claims, or nil.
 func currentClaims(c *gin.Context) *auth.Claims {
 	if v, ok := c.Get("claims"); ok {

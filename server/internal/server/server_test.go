@@ -78,18 +78,19 @@ func doJSON(t *testing.T, method, url, token string, body any, out any) int {
 }
 
 func login(t *testing.T, base string) string {
+	return loginAs(t, base, "easyavr", "easyavr")
+}
+
+func loginAs(t *testing.T, base, user, pass string) string {
 	t.Helper()
 	var r apiResp
 	doJSON(t, http.MethodPost, base+"/api/v1/auth/login", "", map[string]string{
-		"username": "easyavr", "password": "easyavr",
+		"username": user, "password": pass,
 	}, &r)
 	var data struct {
 		Token string `json:"token"`
 	}
 	json.Unmarshal(r.Data, &data)
-	if data.Token == "" {
-		t.Fatalf("login failed: %+v", r)
-	}
 	return data.Token
 }
 
@@ -513,6 +514,104 @@ func TestISAPIProbeAndImport(t *testing.T) {
 	}
 	if !strings.HasPrefix(dev.Channels[0].SourceURL, "rtsp://") {
 		t.Fatalf("channel missing rtsp source: %+v", dev.Channels[0])
+	}
+}
+
+// TestUserAndRoleManagement covers RBAC: role CRUD, user CRUD, admin gating,
+// password change and last-admin protection.
+func TestUserAndRoleManagement(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Built-in roles are seeded.
+	var roles apiResp
+	doJSON(t, http.MethodGet, B+"/roles", admin, nil, &roles)
+	var roleList []struct {
+		ID   uint   `json:"id"`
+		Name string `json:"name"`
+	}
+	json.Unmarshal(roles.Data, &roleList)
+	if len(roleList) < 3 {
+		t.Fatalf("expected built-in roles, got %+v", roleList)
+	}
+
+	// Create a role.
+	var roleResp apiResp
+	doJSON(t, http.MethodPost, B+"/roles", admin,
+		map[string]any{"name": "auditor", "description": "audit", "permissions": "video,event"}, &roleResp)
+	if roleResp.Code != 0 {
+		t.Fatalf("create role failed: %+v", roleResp)
+	}
+
+	// Create a user with that role.
+	var userResp apiResp
+	doJSON(t, http.MethodPost, B+"/users", admin,
+		map[string]any{"username": "alice", "nickname": "Alice", "password": "secret1", "role": "auditor"}, &userResp)
+	var alice struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(userResp.Data, &alice)
+	if alice.ID == 0 {
+		t.Fatalf("create user failed: %+v", userResp)
+	}
+
+	aliceToken := loginAs(t, srv.URL, "alice", "secret1")
+	if aliceToken == "" {
+		t.Fatal("alice login failed")
+	}
+
+	// Non-admin cannot manage users/roles.
+	var r apiResp
+	if code := doJSON(t, http.MethodGet, B+"/users", aliceToken, nil, &r); code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin list users, got %d", code)
+	}
+	if code := doJSON(t, http.MethodGet, B+"/devices", aliceToken, nil, &r); code != http.StatusOK {
+		t.Fatalf("expected 200 for normal read, got %d", code)
+	}
+
+	// Self password change.
+	if code := doJSON(t, http.MethodPost, B+"/auth/password", aliceToken,
+		map[string]any{"oldPassword": "secret1", "newPassword": "secret2"}, &r); code != http.StatusOK {
+		t.Fatalf("self password change failed: %d %s", code, r.Message)
+	}
+	if loginAs(t, srv.URL, "alice", "secret2") == "" {
+		t.Fatal("new password login failed")
+	}
+
+	// Built-in role cannot be deleted.
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/roles/%d", B, roleList[0].ID), admin, nil, &r); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 deleting builtin role, got %d", code)
+	}
+
+	// Delete the user, then the custom role.
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/users/%d", B, alice.ID), admin, nil, &r); code != http.StatusOK {
+		t.Fatalf("delete user failed: %d", code)
+	}
+	var roles2 apiResp
+	doJSON(t, http.MethodGet, B+"/roles", admin, nil, &roles2)
+	var rl2 []struct {
+		ID   uint   `json:"id"`
+		Name string `json:"name"`
+	}
+	json.Unmarshal(roles2.Data, &rl2)
+	for _, it := range rl2 {
+		if it.Name == "auditor" {
+			if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/roles/%d", B, it.ID), admin, nil, &r); code != http.StatusOK {
+				t.Fatalf("delete custom role failed: %d", code)
+			}
+		}
+	}
+
+	// Last admin cannot be deleted or demoted.
+	var me apiResp
+	doJSON(t, http.MethodGet, B+"/auth/profile", admin, nil, &me)
+	var prof struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(me.Data, &prof)
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/users/%d", B, prof.ID), admin, nil, &r); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 deleting self/last admin, got %d", code)
 	}
 }
 

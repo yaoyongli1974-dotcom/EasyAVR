@@ -117,6 +117,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 - **GA/T1400（VIID）**：`/VIID/*` 结构化与告警 XML 入库（`EASYAVR_GA1400_ENABLED`）；上下级级联与订阅见「GA/T1400 级联」页。
 - **EHOME/ISUP**：默认纯 Go UDP CMS/SMS 接入端点（`EASYAVR_EHOME_ENABLED`）。官方 EHOME/ISUP 只提供原生 SDK（头文件 + `.so/.dll`），无公开协议规范；已预留**可选 CGO 接入位**，提供 SDK 后以 `go build -tags ehome_sdk` 启用（默认构建不含 CGO）。
 - **GB35114**：国密 SM2 平台 CA、设备证书签发/登记/校验/吊销、SM3 工具，以及 **GM/T 0024 安全 SIP/TLS** 双向证书认证（`EASYAVR_GB35114_ENABLED` + `EASYAVR_GB35114_SIP_LISTEN`）。见「国密 GB35114」页。
+- **用户与角色**：用户 CRUD、角色 CRUD（权限清单）、修改密码；管理员专属管理，非管理员按角色权限访问。见「用户与角色」页。
 - **集群**：节点心跳 + 设备级最少负载调度（`/cluster/stats` 展示各节点设备数）。
 - **开放 API**：第三方/APP 通过 `/api/v1/open/*` 访问设备/通道/资源/事件（`X-API-Key`，scope 读写 + 限速 + 每日配额 + 审计），OpenAPI 文档见 `GET /api/v1/openapi.json`。见「开放 API」页。
 
