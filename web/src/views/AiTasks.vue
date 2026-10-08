@@ -14,13 +14,17 @@
         <template #default="{ row }">{{ providerName(row.providerId) }}</template>
       </el-table-column>
       <el-table-column prop="taskType" label="任务类型" width="130" />
+      <el-table-column label="计划" width="150">
+        <template #default="{ row }">{{ scheduleText(row.schedule) }}</template>
+      </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'running' ? 'success' : 'info'">{{ row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240">
+      <el-table-column label="操作" width="300">
         <template #default="{ row }">
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link type="success" :disabled="row.status === 'running'" @click="start(row)">启动</el-button>
           <el-button link type="warning" :disabled="row.status !== 'running'" @click="stop(row)">停止</el-button>
           <el-button link type="primary" @click="run(row)">试跑</el-button>
@@ -29,7 +33,7 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="visible" title="新建分析任务" width="560px">
+    <el-dialog v-model="visible" :title="editingId ? '编辑分析任务' : '新建分析任务'" width="560px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="通道">
@@ -51,7 +55,24 @@
           </el-select>
         </el-form-item>
         <el-form-item label="配置 JSON">
-          <el-input v-model="form.config" type="textarea" :rows="5" placeholder='{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险"}' />
+          <el-input v-model="form.config" type="textarea" :rows="4" placeholder='{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险"}' />
+        </el-form-item>
+        <el-form-item label="灵敏度">
+          <el-slider v-model="form.sensitivity" :min="1" :max="100" show-input />
+        </el-form-item>
+        <el-form-item label="分析计划">
+          <el-select v-model="schedule.days" style="width: 130px; margin-right: 8px">
+            <el-option label="每天" value="daily" />
+            <el-option label="工作日" value="workday" />
+            <el-option label="双休日" value="weekend" />
+          </el-select>
+          <el-input v-model="schedule.start" placeholder="00:00" style="width: 90px" />
+          <span style="margin: 0 6px">-</span>
+          <el-input v-model="schedule.end" placeholder="23:59" style="width: 90px" />
+        </el-form-item>
+        <el-form-item label="ROI 区域">
+          <el-input v-model="form.roi" type="textarea" :rows="2"
+            placeholder='归一化多边形：[[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9]]' />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -74,13 +95,28 @@ const providers = ref<AIProvider[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const visible = ref(false)
+const editingId = ref<number>()
+const schedule = reactive({ days: 'daily', start: '00:00', end: '23:59' })
 const form = reactive<Partial<AITask>>({
   name: '',
   channelId: undefined,
   providerId: undefined,
   taskType: 'vlm_understand',
+  roi: '',
+  sensitivity: 50,
   config: '{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险，输出 JSON"}',
 })
+
+function scheduleText(s: string) {
+  if (!s) return '全天'
+  try {
+    const o = JSON.parse(s)
+    const d = o.days === 'workday' ? '工作日' : o.days === 'weekend' ? '双休日' : '每天'
+    return `${d} ${o.start || ''}-${o.end || ''}`
+  } catch {
+    return '-'
+  }
+}
 
 function channelName(id: number) {
   return channels.value.find((c) => c.id === id)?.name || `#${id}`
@@ -104,13 +140,37 @@ async function load() {
 }
 
 function openCreate() {
+  editingId.value = undefined
   Object.assign(form, {
     name: '',
     channelId: undefined,
     providerId: undefined,
     taskType: 'vlm_understand',
+    roi: '',
+    sensitivity: 50,
     config: '{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险，输出 JSON"}',
   })
+  Object.assign(schedule, { days: 'daily', start: '00:00', end: '23:59' })
+  visible.value = true
+}
+
+function openEdit(row: AITask) {
+  editingId.value = row.id
+  Object.assign(form, {
+    name: row.name,
+    channelId: row.channelId,
+    providerId: row.providerId,
+    taskType: row.taskType,
+    config: row.config,
+    roi: row.roi,
+    sensitivity: row.sensitivity || 50,
+  })
+  try {
+    const o = JSON.parse(row.schedule || '{}')
+    Object.assign(schedule, { days: o.days || 'daily', start: o.start || '00:00', end: o.end || '23:59' })
+  } catch {
+    Object.assign(schedule, { days: 'daily', start: '00:00', end: '23:59' })
+  }
   visible.value = true
 }
 
@@ -124,12 +184,21 @@ function syncKind() {
 async function save() {
   saving.value = true
   try {
-    await aiApi.createTask(form)
-    ElMessage.success('任务已创建')
+    const payload: Partial<AITask> = {
+      ...form,
+      schedule: JSON.stringify(schedule),
+    }
+    if (editingId.value) {
+      await aiApi.updateTask(editingId.value, payload)
+      ElMessage.success('任务已更新')
+    } else {
+      await aiApi.createTask(payload)
+      ElMessage.success('任务已创建')
+    }
     visible.value = false
     load()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.message || '创建失败')
+    ElMessage.error(e?.response?.data?.message || '保存失败')
   } finally {
     saving.value = false
   }

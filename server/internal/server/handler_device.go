@@ -359,11 +359,13 @@ func (a *App) channelPlayURLs(c *gin.Context) {
 	}
 	var dev model.Device
 	a.db.First(&dev, ch.DeviceID)
+	urls, _ := a.signPlayURLs(ch.StreamKey)
 	ok(c, gin.H{
 		"channelId": ch.ID,
 		"streamKey": ch.StreamKey,
 		"online":    ch.Online,
-		"playUrls":  a.zlm.PlayURLs(ch.StreamKey),
+		"auth":      a.cfg.Playback.Auth,
+		"playUrls":  urls,
 		"pushUrl":   a.zlm.PushURL(ch.StreamKey),
 		"sourceUrl": device.BuildSourceURL(dev, ch),
 	})

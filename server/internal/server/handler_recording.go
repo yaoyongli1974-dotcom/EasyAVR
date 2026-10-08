@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -81,6 +83,55 @@ func (a *App) deleteRecording(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{"id": id})
+}
+
+// markRecording sets/clears the emergency mark on a recording (手册 3.3.3 紧急标记).
+func (a *App) markRecording(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var req struct {
+		Marked bool   `json:"marked"`
+		Mark   string `json:"mark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := a.db.Model(&model.Recording{}).Where("id = ?", id).
+		Updates(map[string]any{"marked": req.Marked, "mark": req.Mark}).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var rec model.Recording
+	a.db.First(&rec, id)
+	ok(c, rec)
+}
+
+// cleanupRecordings prunes catalog entries older than the retention window
+// (手册 3.7.2.1 录像存储阈值). Days=0 uses each channel plan's RetentionDays.
+func (a *App) cleanupRecordings(c *gin.Context) {
+	days, _ := strconv.Atoi(c.Query("days"))
+	now := time.Now()
+	removed := int64(0)
+	if days > 0 {
+		cutoff := now.AddDate(0, 0, -days)
+		res := a.db.Where("start_time < ?", cutoff).Delete(&model.Recording{})
+		removed += res.RowsAffected
+	} else {
+		var plans []model.RecordingPlan
+		a.db.Find(&plans)
+		for _, p := range plans {
+			if p.RetentionDays <= 0 {
+				continue
+			}
+			cutoff := now.AddDate(0, 0, -p.RetentionDays)
+			res := a.db.Where("channel_id = ? AND start_time < ?", p.ChannelID, cutoff).Delete(&model.Recording{})
+			removed += res.RowsAffected
+		}
+	}
+	ok(c, gin.H{"removed": removed})
 }
 
 func (a *App) getRecordingPlan(c *gin.Context) {

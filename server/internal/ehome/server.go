@@ -33,5 +33,8 @@ func NewServer(cfg config.EHOMEConfig, db *gorm.DB) *Server {
 // Start starts the selected backend.
 func (s *Server) Start() error { return s.backend.Start() }
 
-// Stop stops the selected backend.
+// Stop stops the EHOME/ISUP intake endpoint.
 func (s *Server) Stop() { s.backend.Stop() }
+
+// Running reports whether the intake endpoint is active.
+func (s *Server) Running() bool { return s.backend.Running() }

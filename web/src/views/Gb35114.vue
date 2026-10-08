@@ -9,8 +9,13 @@
       v-if="!config.enabled"
       type="warning"
       :closable="false"
-      title="GB35114 未启用，请设置 EASYAVR_GB35114_ENABLED=true 后重启。"
-    />
+      title="GB35114 未启用"
+    >
+      <template #default>
+        <el-button link type="primary" @click="goConfig">前往平台配置开启</el-button>
+        <span>或在环境变量设置 EASYAVR_GB35114_ENABLED=true 后重启。</span>
+      </template>
+    </el-alert>
     <template v-else>
       <el-card style="margin-bottom: 16px">
         <template #header>平台 SM2 证书（安装到设备）</template>
@@ -102,9 +107,15 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { gb35114Api } from '../api'
 import type { GB35114Cert } from '../types'
+
+const router = useRouter()
+function goConfig() {
+  router.push('/config')
+}
 
 const config = ref<Record<string, any>>({})
 const platformCert = ref('')

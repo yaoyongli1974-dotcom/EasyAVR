@@ -681,9 +681,9 @@ func TestGroupManagement(t *testing.T) {
 	var groupsResp apiResp
 	doJSON(t, http.MethodGet, B+"/groups", admin, nil, &groupsResp)
 	var groupList []struct {
-		ID       uint `json:"id"`
+		ID       uint   `json:"id"`
 		Name     string `json:"name"`
-		ParentID uint `json:"parentId"`
+		ParentID uint   `json:"parentId"`
 		Path     string `json:"path"`
 	}
 	json.Unmarshal(groupsResp.Data, &groupList)
@@ -811,9 +811,9 @@ func TestGroupManagement(t *testing.T) {
 	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, gp.ID), admin, nil, &r) // fails, child exists
 	// Clean up child first
 	var groupList2 []struct {
-		ID       uint `json:"id"`
+		ID       uint   `json:"id"`
 		Name     string `json:"name"`
-		ParentID uint `json:"parentId"`
+		ParentID uint   `json:"parentId"`
 	}
 	doJSON(t, http.MethodGet, B+"/groups", admin, nil, &groupsResp)
 	json.Unmarshal(groupsResp.Data, &groupList2)
@@ -1044,13 +1044,13 @@ func TestAuditLog(t *testing.T) {
 	doJSON(t, http.MethodGet, B+"/audit/logs", admin, nil, &auditResp)
 	var auditPage struct {
 		Items []struct {
-			ID        uint   `json:"id"`
-			Username  string `json:"username"`
-			Action    string `json:"action"`
-			Resource  string `json:"resource"`
-			Result    string `json:"result"`
-			Method    string `json:"method"`
-			Path      string `json:"path"`
+			ID       uint   `json:"id"`
+			Username string `json:"username"`
+			Action   string `json:"action"`
+			Resource string `json:"resource"`
+			Result   string `json:"result"`
+			Method   string `json:"method"`
+			Path     string `json:"path"`
 		} `json:"items"`
 		Total int `json:"total"`
 	}
@@ -1123,4 +1123,1265 @@ func TestAuditLog(t *testing.T) {
 		t.Fatalf("export Content-Type not CSV: %s", resp.Header.Get("Content-Type"))
 	}
 	resp.Body.Close()
+}
+
+// TestPolicyEngine covers the Casbin policy engine: listing seeded policies,
+// the permission tester, adding/removing rules and admin-only gating.
+func TestPolicyEngine(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Seeded policies are listed (admin + operator + viewer).
+	var listResp apiResp
+	if code := doJSON(t, http.MethodGet, B+"/policy", admin, nil, &listResp); code != http.StatusOK {
+		t.Fatalf("list policies status %d", code)
+	}
+	var items []struct {
+		PType  string   `json:"pType"`
+		Params []string `json:"params"`
+	}
+	json.Unmarshal(listResp.Data, &items)
+	if len(items) == 0 {
+		t.Fatalf("expected seeded policies, got none")
+	}
+	foundAdminWildcard := false
+	for _, it := range items {
+		if it.PType == "p" && len(it.Params) == 4 && it.Params[0] == "role:admin" && it.Params[1] == "*" {
+			foundAdminWildcard = true
+		}
+	}
+	if !foundAdminWildcard {
+		t.Fatalf("admin wildcard policy missing: %+v", items)
+	}
+
+	// Tester: admin is allowed anything.
+	var testResp apiResp
+	doJSON(t, http.MethodPost, B+"/policy/test", admin, map[string]any{
+		"userId": 1, "username": "easyavr", "role": "admin",
+		"resource": "ai:task", "action": "delete", "domain": "",
+	}, &testResp)
+	var testData struct {
+		Allowed bool `json:"allowed"`
+	}
+	json.Unmarshal(testResp.Data, &testData)
+	if !testData.Allowed {
+		t.Fatalf("admin should be allowed, got %+v", testResp)
+	}
+
+	// Viewer is allowed read on video but not on ai:task.
+	doJSON(t, http.MethodPost, B+"/policy/test", admin, map[string]any{
+		"userId": 2, "username": "v", "role": "viewer",
+		"resource": "video", "action": "read", "domain": "",
+	}, &testResp)
+	json.Unmarshal(testResp.Data, &testData)
+	if !testData.Allowed {
+		t.Fatalf("viewer should be allowed video read")
+	}
+	doJSON(t, http.MethodPost, B+"/policy/test", admin, map[string]any{
+		"userId": 2, "username": "v", "role": "viewer",
+		"resource": "ai:task", "action": "create", "domain": "",
+	}, &testResp)
+	json.Unmarshal(testResp.Data, &testData)
+	if testData.Allowed {
+		t.Fatalf("viewer should not be allowed ai:task create")
+	}
+
+	// Add a user-level policy granting viewer-2 ai:task, then verify.
+	var addResp apiResp
+	doJSON(t, http.MethodPost, B+"/policy", admin, map[string]any{
+		"pType": "p", "params": []string{"user:2", "ai:task", "create", "*"},
+	}, &addResp)
+	if addResp.Code != 0 {
+		t.Fatalf("add policy failed: %+v", addResp)
+	}
+	doJSON(t, http.MethodPost, B+"/policy/test", admin, map[string]any{
+		"userId": 2, "username": "v", "role": "viewer",
+		"resource": "ai:task", "action": "create", "domain": "",
+	}, &testResp)
+	json.Unmarshal(testResp.Data, &testData)
+	if !testData.Allowed {
+		t.Fatalf("user-level policy should grant ai:task create")
+	}
+
+	// Remove it again.
+	var rmResp apiResp
+	doJSON(t, http.MethodDelete, B+"/policy", admin, map[string]any{
+		"pType": "p", "params": []string{"user:2", "ai:task", "create", "*"},
+	}, &rmResp)
+	if rmResp.Code != 0 {
+		t.Fatalf("remove policy failed: %+v", rmResp)
+	}
+	doJSON(t, http.MethodPost, B+"/policy/test", admin, map[string]any{
+		"userId": 2, "username": "v", "role": "viewer",
+		"resource": "ai:task", "action": "create", "domain": "",
+	}, &testResp)
+	json.Unmarshal(testResp.Data, &testData)
+	if testData.Allowed {
+		t.Fatalf("removed policy should no longer grant access")
+	}
+
+	// Non-admin cannot manage policies.
+	var roleResp apiResp
+	doJSON(t, http.MethodPost, B+"/roles", admin,
+		map[string]any{"name": "policyviewer", "description": "", "permissions": "video"}, &roleResp)
+	var userResp apiResp
+	doJSON(t, http.MethodPost, B+"/users", admin,
+		map[string]any{"username": "pv", "nickname": "PV", "password": "secret1", "role": "policyviewer"}, &userResp)
+	pvToken := loginAs(t, srv.URL, "pv", "secret1")
+	if code := doJSON(t, http.MethodGet, B+"/policy", pvToken, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("non-admin list policies should be 403, got %d", code)
+	}
+}
+
+// TestModelManagement covers the AI model registry: models, versions and
+// deployments, including version uniqueness and status transitions.
+func TestModelManagement(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// A runtime provider to deploy onto.
+	var provResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/providers", admin,
+		map[string]any{"name": "detector", "kind": "cv", "endpoint": "http://127.0.0.1:9"}, &provResp)
+	var prov struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(provResp.Data, &prov)
+	if prov.ID == 0 {
+		t.Fatalf("provider not created: %+v", provResp)
+	}
+
+	// Register a model.
+	var modelResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/models", admin, map[string]any{
+		"name": "yolov8", "kind": "cv", "task": "detection", "framework": "onnx",
+		"description": "person/vehicle detection", "tags": "detection,person",
+	}, &modelResp)
+	var m struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(modelResp.Data, &m)
+	if m.ID == 0 {
+		t.Fatalf("model not created: %+v", modelResp)
+	}
+
+	// Register a version.
+	var verResp apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/models/%d/versions", B, m.ID), admin, map[string]any{
+		"version": "1.0.0", "format": "onnx", "sizeBytes": 12345, "checksum": "sha256:abc",
+		"metrics": `{"mAP":0.91}`, "labels": `["person","car"]`,
+	}, &verResp)
+	var ver struct {
+		ID      uint   `json:"id"`
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	json.Unmarshal(verResp.Data, &ver)
+	if ver.ID == 0 || ver.Status != "registered" {
+		t.Fatalf("version not registered: %+v", verResp)
+	}
+
+	// Duplicate version is rejected.
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/models/%d/versions", B, m.ID), admin,
+		map[string]any{"version": "1.0.0"}, nil); code != http.StatusConflict {
+		t.Fatalf("duplicate version should be 409, got %d", code)
+	}
+
+	// List models shows the version count and latest version.
+	var listResp apiResp
+	doJSON(t, http.MethodGet, B+"/ai/models", admin, nil, &listResp)
+	var models []struct {
+		ID           uint   `json:"id"`
+		VersionCount int    `json:"versionCount"`
+		LatestVer    string `json:"latestVersion"`
+	}
+	json.Unmarshal(listResp.Data, &models)
+	found := false
+	for _, it := range models {
+		if it.ID == m.ID && it.VersionCount == 1 && it.LatestVer == "1.0.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("model list missing version info: %+v", models)
+	}
+
+	// Deploy the version onto the provider.
+	var depResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/deployments", admin, map[string]any{
+		"modelId": m.ID, "versionId": ver.ID, "providerId": prov.ID, "replicas": 2,
+	}, &depResp)
+	var dep struct {
+		ID       uint   `json:"id"`
+		Status   string `json:"status"`
+		Health   string `json:"health"`
+		Replicas int    `json:"replicas"`
+	}
+	json.Unmarshal(depResp.Data, &dep)
+	if dep.ID == 0 || dep.Status != "active" || dep.Replicas != 2 {
+		t.Fatalf("deployment not active: %+v", depResp)
+	}
+
+	// Version status flips to deployed.
+	var vlistResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/models/%d/versions", B, m.ID), admin, nil, &vlistResp)
+	var versions []struct {
+		ID     uint   `json:"id"`
+		Status string `json:"status"`
+	}
+	json.Unmarshal(vlistResp.Data, &versions)
+	if len(versions) != 1 || versions[0].Status != "deployed" {
+		t.Fatalf("version should be deployed: %+v", versions)
+	}
+
+	// Deployments list is enriched with names.
+	var dlistResp apiResp
+	doJSON(t, http.MethodGet, B+"/ai/deployments", admin, nil, &dlistResp)
+	var ds []struct {
+		ID           uint   `json:"id"`
+		ModelName    string `json:"modelName"`
+		Version      string `json:"version"`
+		ProviderName string `json:"providerName"`
+		Status       string `json:"status"`
+	}
+	json.Unmarshal(dlistResp.Data, &ds)
+	if len(ds) != 1 || ds[0].ModelName != "yolov8" || ds[0].Version != "1.0.0" || ds[0].ProviderName != "detector" {
+		t.Fatalf("deployment list not enriched: %+v", ds)
+	}
+
+	// Stop -> version back to available; activate -> deployed again.
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/deployments/%d/stop", B, dep.ID), admin, nil, nil)
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/models/%d/versions", B, m.ID), admin, nil, &vlistResp)
+	json.Unmarshal(vlistResp.Data, &versions)
+	if versions[0].Status != "available" {
+		t.Fatalf("stopped deployment should set version available, got %s", versions[0].Status)
+	}
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/deployments/%d/activate", B, dep.ID), admin, nil, nil)
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/models/%d/versions", B, m.ID), admin, nil, &vlistResp)
+	json.Unmarshal(vlistResp.Data, &versions)
+	if versions[0].Status != "deployed" {
+		t.Fatalf("activated deployment should set version deployed, got %s", versions[0].Status)
+	}
+
+	// Model detail includes versions and deployments.
+	var detail apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/models/%d", B, m.ID), admin, nil, &detail)
+	var detailData struct {
+		Versions    []json.RawMessage `json:"versions"`
+		Deployments []json.RawMessage `json:"deployments"`
+	}
+	json.Unmarshal(detail.Data, &detailData)
+	if len(detailData.Versions) != 1 || len(detailData.Deployments) != 1 {
+		t.Fatalf("model detail incomplete: %s", string(detail.Data))
+	}
+
+	// Stats.
+	var statsResp apiResp
+	doJSON(t, http.MethodGet, B+"/ai/model-stats", admin, nil, &statsResp)
+	var stats struct {
+		Models      int64 `json:"models"`
+		Versions    int64 `json:"versions"`
+		Deployments int64 `json:"deployments"`
+		Active      int64 `json:"active"`
+	}
+	json.Unmarshal(statsResp.Data, &stats)
+	if stats.Models != 1 || stats.Versions != 1 || stats.Deployments != 1 || stats.Active != 1 {
+		t.Fatalf("unexpected model stats: %+v", stats)
+	}
+
+	// Delete model cascades versions and deployments.
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/ai/models/%d", B, m.ID), admin, nil, nil); code != http.StatusOK {
+		t.Fatalf("delete model failed: %d", code)
+	}
+	doJSON(t, http.MethodGet, B+"/ai/deployments", admin, nil, &dlistResp)
+	ds = nil
+	json.Unmarshal(dlistResp.Data, &ds)
+	if len(ds) != 0 {
+		t.Fatalf("deployments should be deleted with model: %+v", ds)
+	}
+}
+
+// TestModelManagementVersionIsolation rejects deploying a version mismatched to
+// a model and deleting a version that is referenced by a deployment.
+func TestModelManagementVersionIsolation(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	var p1, p2 apiResp
+	doJSON(t, http.MethodPost, B+"/ai/providers", admin, map[string]any{"name": "p1", "kind": "cv"}, &p1)
+	doJSON(t, http.MethodPost, B+"/ai/providers", admin, map[string]any{"name": "p2", "kind": "cv"}, &p2)
+	var prov struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(p1.Data, &prov)
+
+	var mA, mB apiResp
+	doJSON(t, http.MethodPost, B+"/ai/models", admin, map[string]any{"name": "mA", "kind": "cv"}, &mA)
+	doJSON(t, http.MethodPost, B+"/ai/models", admin, map[string]any{"name": "mB", "kind": "cv"}, &mB)
+	var a, b struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(mA.Data, &a)
+	json.Unmarshal(mB.Data, &b)
+
+	var vA apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/models/%d/versions", B, a.ID), admin,
+		map[string]any{"version": "1.0"}, &vA)
+	var va struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(vA.Data, &va)
+
+	// Deploying model B with model A's version must fail.
+	if code := doJSON(t, http.MethodPost, B+"/ai/deployments", admin,
+		map[string]any{"modelId": b.ID, "versionId": va.ID, "providerId": prov.ID}, nil); code != http.StatusBadRequest {
+		t.Fatalf("mismatched version/model should be 400, got %d", code)
+	}
+}
+
+// TestMapEvents covers the AI event map: events placed via their channel GPS,
+// filtering by level/type and aggregate stats.
+func TestMapEvents(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// A located device/channel.
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-map", "protocol": "rtsp", "ip": "10.0.0.50",
+	}, &devResp)
+	var dev struct {
+		ID       uint `json:"id"`
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	if len(dev.Channels) == 0 {
+		t.Fatalf("device has no channel: %+v", devResp)
+	}
+	chID := dev.Channels[0].ID
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/map/channels/%d/gps", B, chID), admin,
+		map[string]any{"longitude": 116.4074, "latitude": 39.9042}, nil); code != http.StatusOK {
+		t.Fatalf("set channel gps failed: %d", code)
+	}
+
+	// A second channel without GPS - its events must not appear on the map.
+	var dev2Resp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-nogps", "protocol": "rtsp", "ip": "10.0.0.51",
+	}, &dev2Resp)
+	var dev2 struct {
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(dev2Resp.Data, &dev2)
+	ch2ID := dev2.Channels[0].ID
+
+	// Ingest events.
+	ingest := func(ch uint, etype, level string) {
+		doJSON(t, http.MethodPost, B+"/events/ingest", admin, map[string]any{
+			"channelId": ch, "kind": "cv", "eventType": etype, "level": level,
+			"confidence": 0.9, "summary": etype + " detected",
+		}, nil)
+	}
+	ingest(chID, "person_intrusion", "critical")
+	ingest(chID, "fire", "warning")
+	ingest(ch2ID, "person_intrusion", "info") // no GPS -> excluded
+
+	// All located events.
+	var listResp apiResp
+	doJSON(t, http.MethodGet, B+"/map/events", admin, nil, &listResp)
+	var events []struct {
+		ChannelID   uint    `json:"channelId"`
+		EventType   string  `json:"eventType"`
+		Level       string  `json:"level"`
+		ChannelName string  `json:"channelName"`
+		Longitude   float64 `json:"longitude"`
+		Latitude    float64 `json:"latitude"`
+	}
+	json.Unmarshal(listResp.Data, &events)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 located events, got %d: %+v", len(events), events)
+	}
+	for _, e := range events {
+		if e.ChannelID != chID || e.Longitude == 0 || e.Latitude == 0 || e.ChannelName == "" {
+			t.Fatalf("event not enriched with coordinates: %+v", e)
+		}
+	}
+
+	// Filter by level.
+	var critResp apiResp
+	doJSON(t, http.MethodGet, B+"/map/events?level=critical", admin, nil, &critResp)
+	events = nil
+	json.Unmarshal(critResp.Data, &events)
+	if len(events) != 1 || events[0].EventType != "person_intrusion" {
+		t.Fatalf("level filter failed: %+v", events)
+	}
+
+	// Filter by event type.
+	var fireResp apiResp
+	doJSON(t, http.MethodGet, B+"/map/events?eventType=fire", admin, nil, &fireResp)
+	events = nil
+	json.Unmarshal(fireResp.Data, &events)
+	if len(events) != 1 || events[0].Level != "warning" {
+		t.Fatalf("type filter failed: %+v", events)
+	}
+
+	// Stats.
+	var statsResp apiResp
+	doJSON(t, http.MethodGet, B+"/map/events/stats", admin, nil, &statsResp)
+	var stats struct {
+		Total   int            `json:"total"`
+		Located int            `json:"located"`
+		ByType  map[string]int `json:"byType"`
+		ByLevel map[string]int `json:"byLevel"`
+	}
+	json.Unmarshal(statsResp.Data, &stats)
+	if stats.Total != 3 || stats.Located != 2 {
+		t.Fatalf("unexpected event stats totals: %+v", stats)
+	}
+	if stats.ByLevel["critical"] != 1 || stats.ByLevel["warning"] != 1 {
+		t.Fatalf("unexpected byLevel: %+v", stats.ByLevel)
+	}
+	if stats.ByType["person_intrusion"] != 1 || stats.ByType["fire"] != 1 {
+		t.Fatalf("unexpected byType: %+v", stats.ByType)
+	}
+}
+
+// TestAlertManagement covers AI event tiered alert distribution: policy +
+// tier CRUD, the tester, delivery audit, stats, event acknowledgement and
+// access control.
+func TestAlertManagement(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	hookCalls := 0
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hookCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hook.Close()
+
+	// Notification channel as a delivery target.
+	var chResp apiResp
+	doJSON(t, http.MethodPost, B+"/notify/channels", admin, map[string]any{
+		"name": "wh", "type": "webhook", "url": hook.URL, "enabled": true,
+	}, &chResp)
+	var ch struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(chResp.Data, &ch)
+	if ch.ID == 0 {
+		t.Fatalf("channel not created: %+v", chResp)
+	}
+
+	// Policy with two tiers.
+	var pResp apiResp
+	doJSON(t, http.MethodPost, B+"/alert/policies", admin, map[string]any{
+		"name": "critical-people", "enabled": true, "minLevel": "warning", "ackRequired": true,
+		"tiers": []map[string]any{
+			{"tier": 0, "delaySec": 0, "targetIds": strconv.Itoa(int(ch.ID))},
+			{"tier": 1, "delaySec": 60, "targetIds": strconv.Itoa(int(ch.ID))},
+		},
+	}, &pResp)
+	var p struct {
+		ID    uint `json:"id"`
+		Tiers []struct {
+			ID   uint `json:"id"`
+			Tier int  `json:"tier"`
+		} `json:"tiers"`
+	}
+	json.Unmarshal(pResp.Data, &p)
+	if p.ID == 0 || len(p.Tiers) != 2 {
+		t.Fatalf("policy/tiers not created: %+v", pResp)
+	}
+
+	// Detail returns tiers.
+	var detail apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/alert/policies/%d", B, p.ID), admin, nil, &detail)
+	json.Unmarshal(detail.Data, &p)
+	if len(p.Tiers) != 2 {
+		t.Fatalf("detail missing tiers: %s", string(detail.Data))
+	}
+
+	// Tester dispatches every tier.
+	var testResp apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/alert/policies/%d/test", B, p.ID), admin, nil, &testResp)
+	var td struct {
+		Sent int `json:"sent"`
+	}
+	json.Unmarshal(testResp.Data, &td)
+	if td.Sent != 2 {
+		t.Fatalf("expected 2 test deliveries, got %+v", testResp)
+	}
+
+	// Delivery audit records both.
+	var dResp apiResp
+	doJSON(t, http.MethodGet, B+"/alert/deliveries", admin, nil, &dResp)
+	var page struct {
+		Total int `json:"total"`
+		Items []struct {
+			PolicyID uint   `json:"policyId"`
+			Reason   string `json:"reason"`
+			Status   string `json:"status"`
+		} `json:"items"`
+	}
+	json.Unmarshal(dResp.Data, &page)
+	if page.Total < 2 {
+		t.Fatalf("expected >=2 delivery records, got %+v", page)
+	}
+
+	// Stats.
+	var statsResp apiResp
+	doJSON(t, http.MethodGet, B+"/alert/stats", admin, nil, &statsResp)
+	var as struct {
+		Policies   int64 `json:"policies"`
+		Deliveries int64 `json:"deliveries"`
+	}
+	json.Unmarshal(statsResp.Data, &as)
+	if as.Policies != 1 || as.Deliveries < 2 {
+		t.Fatalf("unexpected alert stats: %+v", as)
+	}
+
+	// Ingest an event, then acknowledge it.
+	var evResp apiResp
+	doJSON(t, http.MethodPost, B+"/events/ingest", admin, map[string]any{
+		"channelId": 1, "kind": "cv", "eventType": "person_intrusion", "level": "critical", "summary": "x",
+	}, &evResp)
+	var ev struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(evResp.Data, &ev)
+	if ev.ID == 0 {
+		t.Fatalf("event not ingested: %+v", evResp)
+	}
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/events/%d/ack", B, ev.ID), admin, nil, nil); code != http.StatusOK {
+		t.Fatalf("ack event failed: %d", code)
+	}
+	var evList apiResp
+	doJSON(t, http.MethodGet, B+"/events", admin, nil, &evList)
+	var evPage struct {
+		Items []struct {
+			ID    uint `json:"id"`
+			Acked bool `json:"acked"`
+		} `json:"items"`
+	}
+	json.Unmarshal(evList.Data, &evPage)
+	ackFound := false
+	for _, it := range evPage.Items {
+		if it.ID == ev.ID && it.Acked {
+			ackFound = true
+		}
+	}
+	if !ackFound {
+		t.Fatalf("event should be acked: %+v", evPage.Items)
+	}
+
+	// Non-admin without alert permission is forbidden.
+	var roleResp apiResp
+	doJSON(t, http.MethodPost, B+"/roles", admin, map[string]any{"name": "noviewer", "permissions": "video"}, &roleResp)
+	doJSON(t, http.MethodPost, B+"/users", admin, map[string]any{
+		"username": "nov", "nickname": "NV", "password": "secret1", "role": "noviewer",
+	}, nil)
+	novToken := loginAs(t, srv.URL, "nov", "secret1")
+	if code := doJSON(t, http.MethodGet, B+"/alert/policies", novToken, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("non-authorized alert access should be 403, got %d", code)
+	}
+
+	// Delete policy cascades tiers.
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/alert/policies/%d", B, p.ID), admin, nil, nil); code != http.StatusOK {
+		t.Fatalf("delete policy failed: %d", code)
+	}
+	var tiersResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/alert/policies/%d/tiers", B, p.ID), admin, nil, &tiersResp)
+	var tiers []json.RawMessage
+	json.Unmarshal(tiersResp.Data, &tiers)
+	if len(tiers) != 0 {
+		t.Fatalf("tiers should be deleted with policy: %s", string(tiersResp.Data))
+	}
+}
+
+// TestPipeline covers the annotation/training pipeline: dataset + sample
+// management, importing events, annotation progress and a training job that
+// registers a model version.
+func TestPipeline(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Create a dataset.
+	var dsResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/datasets", admin, map[string]any{
+		"name": "person-det", "kind": "cv", "labels": `["person","car"]`,
+	}, &dsResp)
+	var ds struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(dsResp.Data, &ds)
+	if ds.ID == 0 {
+		t.Fatalf("dataset not created: %+v", dsResp)
+	}
+
+	// Ingest two events with snapshots.
+	var eventIDs []uint
+	for _, et := range []string{"person", "person"} {
+		var evResp apiResp
+		doJSON(t, http.MethodPost, B+"/events/ingest", admin, map[string]any{
+			"channelId": 1, "kind": "cv", "eventType": et, "level": "info",
+			"summary": et, "snapshot": "/snapshots/" + et + ".jpg",
+		}, &evResp)
+		var ev struct {
+			ID uint `json:"id"`
+		}
+		json.Unmarshal(evResp.Data, &ev)
+		eventIDs = append(eventIDs, ev.ID)
+	}
+
+	// Import events as samples.
+	var impResp apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/datasets/%d/samples/import", B, ds.ID), admin,
+		map[string]any{"eventIds": eventIDs}, &impResp)
+	var imp struct {
+		Created int `json:"created"`
+	}
+	json.Unmarshal(impResp.Data, &imp)
+	if imp.Created != 2 {
+		t.Fatalf("expected 2 imported samples, got %+v", impResp)
+	}
+
+	// Add one manual sample.
+	var sResp apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/datasets/%d/samples", B, ds.ID), admin,
+		map[string]any{"imageUrl": "/snapshots/manual.jpg", "split": "train"}, &sResp)
+	var sample struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(sResp.Data, &sample)
+	if sample.ID == 0 {
+		t.Fatalf("sample not created: %+v", sResp)
+	}
+
+	// Dataset now reports 3 samples.
+	var detResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/datasets/%d", B, ds.ID), admin, nil, &detResp)
+	var det struct {
+		Dataset struct {
+			SampleCount  int `json:"sampleCount"`
+			LabeledCount int `json:"labeledCount"`
+		} `json:"dataset"`
+	}
+	json.Unmarshal(detResp.Data, &det)
+	if det.Dataset.SampleCount != 3 {
+		t.Fatalf("expected sampleCount 3, got %+v", det.Dataset)
+	}
+
+	// Label one sample.
+	if code := doJSON(t, http.MethodPut, fmt.Sprintf("%s/ai/datasets/%d/samples/%d", B, ds.ID, sample.ID), admin,
+		map[string]any{"status": "labeled", "labels": `{"class":"person"}`}, nil); code != http.StatusOK {
+		t.Fatalf("label sample failed: %d", code)
+	}
+
+	// Annotation task picks up progress from the dataset.
+	var atResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/annotations", admin, map[string]any{
+		"name": "label-wave-1", "datasetId": ds.ID, "assignee": "alice",
+	}, &atResp)
+	var at struct {
+		ID      uint `json:"id"`
+		Total   int  `json:"total"`
+		Labeled int  `json:"labeled"`
+	}
+	json.Unmarshal(atResp.Data, &at)
+	if at.ID == 0 || at.Total != 3 || at.Labeled != 1 {
+		t.Fatalf("unexpected annotation progress: %+v", atResp)
+	}
+
+	// Complete annotation -> dataset becomes ready.
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/annotations/%d/complete", B, at.ID), admin, nil, nil)
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/datasets/%d", B, ds.ID), admin, nil, &detResp)
+	json.Unmarshal(detResp.Data, &det)
+	var dsStatus struct {
+		Dataset struct {
+			Status string `json:"status"`
+		} `json:"dataset"`
+	}
+	json.Unmarshal(detResp.Data, &dsStatus)
+	if dsStatus.Dataset.Status != "ready" {
+		t.Fatalf("dataset should be ready after annotation, got %+v", dsStatus.Dataset)
+	}
+
+	// Training job produces a model version.
+	var jobResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/training", admin, map[string]any{
+		"name": "yolo-train", "datasetId": ds.ID, "framework": "pytorch",
+		"hyperParams": `{"epochs":10}`, "metrics": `{"mAP":0.82}`,
+	}, &jobResp)
+	var job struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(jobResp.Data, &job)
+	if job.ID == 0 {
+		t.Fatalf("training job not created: %+v", jobResp)
+	}
+	var runResp apiResp
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/ai/training/%d/run", B, job.ID), admin, nil, &runResp); code != http.StatusOK {
+		t.Fatalf("run training failed: %d %s", code, runResp.Message)
+	}
+	var run struct {
+		Job struct {
+			Status    string `json:"status"`
+			VersionID uint   `json:"versionId"`
+			ModelID   uint   `json:"modelId"`
+		} `json:"job"`
+		Version struct {
+			ID      uint   `json:"id"`
+			Version string `json:"version"`
+			Status  string `json:"status"`
+		} `json:"version"`
+	}
+	json.Unmarshal(runResp.Data, &run)
+	if run.Job.Status != "succeeded" || run.Job.VersionID == 0 || run.Version.Status != "registered" {
+		t.Fatalf("training did not produce a version: %s", string(runResp.Data))
+	}
+	// The outcome is visible in the model registry.
+	var mvResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/models/%d/versions", B, run.Job.ModelID), admin, nil, &mvResp)
+	var versions []json.RawMessage
+	json.Unmarshal(mvResp.Data, &versions)
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 registered model version, got %s", string(mvResp.Data))
+	}
+
+	// Pipeline stats.
+	var psResp apiResp
+	doJSON(t, http.MethodGet, B+"/ai/pipeline-stats", admin, nil, &psResp)
+	var ps struct {
+		Datasets    int64 `json:"datasets"`
+		Samples     int64 `json:"samples"`
+		Labeled     int64 `json:"labeled"`
+		Annotations int64 `json:"annotations"`
+		Jobs        int64 `json:"jobs"`
+	}
+	json.Unmarshal(psResp.Data, &ps)
+	if ps.Datasets != 1 || ps.Samples != 3 || ps.Labeled != 1 || ps.Annotations != 1 || ps.Jobs != 1 {
+		t.Fatalf("unexpected pipeline stats: %+v", ps)
+	}
+
+	// Non-authorized role is rejected.
+	var roleResp apiResp
+	doJSON(t, http.MethodPost, B+"/roles", admin, map[string]any{"name": "pv2", "permissions": "video"}, &roleResp)
+	doJSON(t, http.MethodPost, B+"/users", admin, map[string]any{
+		"username": "pv2", "nickname": "PV2", "password": "secret1", "role": "pv2",
+	}, nil)
+	pvToken := loginAs(t, srv.URL, "pv2", "secret1")
+	if code := doJSON(t, http.MethodGet, B+"/ai/datasets", pvToken, nil, nil); code != http.StatusForbidden {
+		t.Fatalf("non-authorized pipeline access should be 403, got %d", code)
+	}
+
+	// Deleting the dataset cascades samples and annotation tasks.
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/ai/datasets/%d", B, ds.ID), admin, nil, nil)
+	var samplesResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/datasets/%d/samples", B, ds.ID), admin, nil, &samplesResp)
+	var remaining []json.RawMessage
+	json.Unmarshal(samplesResp.Data, &remaining)
+	if len(remaining) != 0 {
+		t.Fatalf("samples should be deleted with dataset: %s", string(samplesResp.Data))
+	}
+}
+
+// TestMapCoordinates covers address search (no network needed for an empty
+// query), CSV coordinate import for devices/channels and group base points.
+func TestMapCoordinates(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Empty query short-circuits without hitting the network.
+	var geo apiResp
+	if code := doJSON(t, http.MethodGet, B+"/map/geocode?q=", admin, nil, &geo); code != http.StatusOK {
+		t.Fatalf("geocode empty status %d", code)
+	}
+	var geoData struct {
+		Provider string            `json:"provider"`
+		Items    []json.RawMessage `json:"items"`
+	}
+	json.Unmarshal(geo.Data, &geoData)
+	if geoData.Provider == "" || len(geoData.Items) != 0 {
+		t.Fatalf("unexpected geocode response: %s", string(geo.Data))
+	}
+
+	// Device with an auto-created main channel.
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-map2", "protocol": "rtsp", "ip": "10.0.0.60",
+	}, &devResp)
+	var dev struct {
+		Name     string `json:"name"`
+		Channels []struct {
+			ID   uint   `json:"id"`
+			Name string `json:"name"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	if len(dev.Channels) == 0 {
+		t.Fatalf("device has no channel: %+v", devResp)
+	}
+
+	// Import device coordinates.
+	var imp apiResp
+	doJSON(t, http.MethodPost, B+"/map/import", admin, map[string]any{
+		"target": "device", "csv": "cam-map2,116.4074,39.9042,50",
+	}, &imp)
+	var impData struct {
+		Updated int `json:"updated"`
+		Skipped int `json:"skipped"`
+	}
+	json.Unmarshal(imp.Data, &impData)
+	if impData.Updated != 1 {
+		t.Fatalf("expected 1 device updated: %+v", impData)
+	}
+
+	// Import channel coordinates by name (header/comment lines are skipped).
+	var imp2 apiResp
+	doJSON(t, http.MethodPost, B+"/map/import", admin, map[string]any{
+		"target": "channel", "csv": "# name,lon,lat\n" + dev.Channels[0].Name + ",121.4737,31.2304",
+	}, &imp2)
+	var imp2Data struct {
+		Updated int `json:"updated"`
+		Skipped int `json:"skipped"`
+	}
+	json.Unmarshal(imp2.Data, &imp2Data)
+	if imp2Data.Updated != 1 {
+		t.Fatalf("expected 1 channel updated: %+v", imp2Data)
+	}
+
+	// The located device shows on the map.
+	var md apiResp
+	doJSON(t, http.MethodGet, B+"/map/devices", admin, nil, &md)
+	var mapDevs []struct {
+		Name      string  `json:"name"`
+		Longitude float64 `json:"longitude"`
+		Latitude  float64 `json:"latitude"`
+	}
+	json.Unmarshal(md.Data, &mapDevs)
+	found := false
+	for _, d := range mapDevs {
+		if d.Name == "cam-map2" && d.Longitude > 116.4 && d.Latitude > 39.9 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("imported device not located: %+v", mapDevs)
+	}
+
+	// Group base coordinate is persisted.
+	var grResp apiResp
+	doJSON(t, http.MethodPost, B+"/groups", admin, map[string]any{
+		"name": "g-base", "longitude": 120.1, "latitude": 30.2,
+	}, &grResp)
+	var gr struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(grResp.Data, &gr)
+	if gr.ID == 0 {
+		t.Fatalf("group not created: %+v", grResp)
+	}
+	var glist apiResp
+	doJSON(t, http.MethodGet, B+"/groups", admin, nil, &glist)
+	var groups []struct {
+		ID        uint    `json:"id"`
+		Longitude float64 `json:"longitude"`
+		Latitude  float64 `json:"latitude"`
+	}
+	json.Unmarshal(glist.Data, &groups)
+	baseFound := false
+	for _, g := range groups {
+		if g.ID == gr.ID && g.Longitude > 120 && g.Latitude > 30 {
+			baseFound = true
+		}
+	}
+	if !baseFound {
+		t.Fatalf("group base coordinate not stored: %+v", groups)
+	}
+}
+
+// TestPTZControl covers PTZ command validation, unsupported protocols and the
+// platform-side preset catalog.
+func TestPTZControl(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// A generic RTSP device: PTZ is not supported.
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-ptz", "protocol": "rtsp", "ip": "10.0.0.70",
+	}, &devResp)
+	var dev struct {
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	if len(dev.Channels) == 0 {
+		t.Fatalf("no channel: %+v", devResp)
+	}
+	chID := dev.Channels[0].ID
+
+	// Unsupported protocol -> 400.
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/ptz", B, chID), admin,
+		map[string]any{"cmd": "up", "speed": 50}, nil); code != http.StatusBadRequest {
+		t.Fatalf("unsupported protocol should be 400, got %d", code)
+	}
+	// Invalid command -> 400.
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/ptz", B, chID), admin,
+		map[string]any{"cmd": "wiggle"}, nil); code != http.StatusBadRequest {
+		t.Fatalf("invalid cmd should be 400, got %d", code)
+	}
+
+	// Preset catalog works (metadata is platform-side).
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/ptz/presets", B, chID), admin,
+		map[string]any{"preset": 1, "name": "gate"}, nil); code != http.StatusOK {
+		t.Fatalf("save preset failed: %d", code)
+	}
+	var list apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/ptz/presets", B, chID), admin, nil, &list)
+	var presets []struct {
+		Preset int    `json:"preset"`
+		Name   string `json:"name"`
+	}
+	json.Unmarshal(list.Data, &presets)
+	if len(presets) != 1 || presets[0].Preset != 1 || presets[0].Name != "gate" {
+		t.Fatalf("unexpected presets: %+v", presets)
+	}
+	// Goto on an unsupported protocol -> 400.
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/ptz/presets/1/goto", B, chID), admin, nil, nil); code != http.StatusBadRequest {
+		t.Fatalf("goto unsupported should be 400, got %d", code)
+	}
+	// Delete preset.
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/channels/%d/ptz/presets/1", B, chID), admin, nil, nil); code != http.StatusOK {
+		t.Fatalf("delete preset failed: %d", code)
+	}
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/ptz/presets", B, chID), admin, nil, &list)
+	presets = nil
+	json.Unmarshal(list.Data, &presets)
+	if len(presets) != 0 {
+		t.Fatalf("preset should be deleted: %+v", presets)
+	}
+
+	// A GB28181 device when signaling is disabled -> 400 with a clear message.
+	var gbResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "34020000001320000077", "protocol": "gb28181", "ip": "10.0.0.71",
+	}, &gbResp)
+	var gbDev struct {
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(gbResp.Data, &gbDev)
+	if len(gbDev.Channels) == 0 {
+		t.Fatalf("gb device has no channel: %+v", gbResp)
+	}
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/ptz", B, gbDev.Channels[0].ID), admin,
+		map[string]any{"cmd": "left", "speed": 60}, nil); code != http.StatusBadRequest {
+		t.Fatalf("gb disabled ptz should be 400, got %d", code)
+	}
+}
+
+// TestDiagnostics covers playback diagnostics and VQD endpoints. Both return a
+// report even when the probe fails (unreachable source / missing tools).
+func TestDiagnostics(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-diag", "protocol": "rtsp", "ip": "10.0.0.80",
+	}, &devResp)
+	var dev struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	if dev.ID == 0 {
+		t.Fatalf("device not created: %+v", devResp)
+	}
+
+	// A channel pointing at a closed port fails fast.
+	var chResp apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/devices/%d/channels", B, dev.ID), admin,
+		map[string]any{"name": "diag", "sourceUrl": "http://127.0.0.1:1/nope"}, &chResp)
+	var ch struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(chResp.Data, &ch)
+	if ch.ID == 0 {
+		t.Fatalf("channel not created: %+v", chResp)
+	}
+
+	var diag apiResp
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/diagnose?timeoutSec=1", B, ch.ID), admin, nil, &diag); code != http.StatusOK {
+		t.Fatalf("diagnose status %d", code)
+	}
+	var diagData struct {
+		Status  string `json:"status"`
+		Channel int    `json:"channelId"`
+		Error   string `json:"error"`
+	}
+	json.Unmarshal(diag.Data, &diagData)
+	if diagData.Status != "failed" || diagData.Channel != int(ch.ID) {
+		t.Fatalf("expected failed probe: %s", string(diag.Data))
+	}
+
+	var q apiResp
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/vqd", B, ch.ID), admin, nil, &q); code != http.StatusOK {
+		t.Fatalf("vqd status %d", code)
+	}
+	var qData struct {
+		Status string `json:"status"`
+	}
+	json.Unmarshal(q.Data, &qData)
+	if qData.Status != "failed" {
+		t.Fatalf("expected failed vqd: %s", string(q.Data))
+	}
+
+	// Unknown channel -> 404.
+	if code := doJSON(t, http.MethodGet, B+"/channels/999999/diagnose", admin, nil, nil); code != http.StatusNotFound {
+		t.Fatalf("unknown channel diagnose should be 404, got %d", code)
+	}
+
+	// Channel without a source URL -> 400.
+	var noSrc apiResp
+	doJSON(t, http.MethodPost, fmt.Sprintf("%s/devices/%d/channels", B, dev.ID), admin,
+		map[string]any{"name": "nosrc"}, &noSrc)
+	var noSrcCh struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(noSrc.Data, &noSrcCh)
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/diagnose", B, noSrcCh.ID), admin, nil, nil); code != http.StatusBadRequest {
+		t.Fatalf("no-source diagnose should be 400, got %d", code)
+	}
+}
+
+// TestEasyCVRBorrowedFeatures covers the EasyCVR-inspired additions: black-list,
+// CSV bulk import/export, playback auth helpers, traffic/status logging, device
+// health checks and AI task schedule evaluation.
+func TestEasyCVRBorrowedFeatures(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	rawGet := func(url string) (int, string) {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("Authorization", "Bearer "+admin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("raw get: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	// --- black list ---
+	if code := doJSON(t, http.MethodPost, B+"/gb/blacklist", admin, map[string]any{"protocol": "GB28181"}, nil); code != http.StatusBadRequest {
+		t.Fatalf("empty blacklist rule should be 400, got %d", code)
+	}
+	if code := doJSON(t, http.MethodPost, B+"/gb/blacklist", admin, map[string]any{
+		"deviceId": "34020000001320000001", "ip": "1.2.3.4",
+	}, nil); code != http.StatusOK {
+		t.Fatalf("create blacklist failed: %d", code)
+	}
+	var blList apiResp
+	doJSON(t, http.MethodGet, B+"/gb/blacklist", admin, nil, &blList)
+	var blacks []struct {
+		DeviceID string `json:"deviceId"`
+	}
+	json.Unmarshal(blList.Data, &blacks)
+	if len(blacks) != 1 || blacks[0].DeviceID != "34020000001320000001" {
+		t.Fatalf("blacklist not listed: %s", blList.Data)
+	}
+
+	// --- device CSV import/export ---
+	devCSV := "name,protocol,accessMode,manufacturer,ip,port,username,password\n" +
+		"cam-import,rtsp,pull,other,10.1.2.3,554,admin,pass\n"
+	var devImp apiResp
+	doJSON(t, http.MethodPost, B+"/devices/import", admin, map[string]any{"csv": devCSV}, &devImp)
+	var devImpData struct {
+		Created int `json:"created"`
+	}
+	json.Unmarshal(devImp.Data, &devImpData)
+	if devImpData.Created != 1 {
+		t.Fatalf("expected 1 device imported: %s", devImp.Data)
+	}
+	if code, body := rawGet(B + "/devices/export"); code != http.StatusOK || !strings.Contains(body, "cam-import") {
+		t.Fatalf("device export missing imported row (code=%d)", code)
+	}
+
+	// --- user CSV import/export + login ---
+	userCSV := "username,nickname,role,password,enabled\nbulkuser,批量用户,viewer,secret123,true\n"
+	var userImp apiResp
+	doJSON(t, http.MethodPost, B+"/users/import", admin, map[string]any{"csv": userCSV}, &userImp)
+	if tok := loginAs(t, srv.URL, "bulkuser", "secret123"); tok == "" {
+		t.Fatal("imported user cannot log in")
+	}
+	if code, body := rawGet(B + "/users/export"); code != http.StatusOK || !strings.Contains(body, "bulkuser") {
+		t.Fatalf("user export missing imported row (code=%d)", code)
+	}
+
+	// --- device health check + status log ---
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-check", "protocol": "rtsp", "ip": "127.0.0.1", "port": 1,
+	}, &devResp)
+	var dev struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	var checkResp apiResp
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/devices/%d/check", B, dev.ID), admin, nil, &checkResp); code != http.StatusOK {
+		t.Fatalf("check device failed: %d", code)
+	}
+	var check struct {
+		Online bool `json:"online"`
+	}
+	json.Unmarshal(checkResp.Data, &check)
+	if check.Online {
+		t.Fatal("device on closed port should be offline")
+	}
+	var logs apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d/status-logs", B, dev.ID), admin, nil, &logs)
+	var logRows []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(logs.Data, &logRows)
+	if len(logRows) == 0 {
+		t.Fatal("expected a status log entry after check")
+	}
+
+	// --- traffic: ZLM down -> sync 502, channel traffic still readable ---
+	var chList apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d/channels", B, dev.ID), admin, nil, &chList)
+	var chans []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(chList.Data, &chans)
+	if len(chans) == 0 {
+		t.Fatal("expected auto-created channel")
+	}
+	if code := doJSON(t, http.MethodPost, B+"/video/traffic/sync", admin, nil, nil); code != http.StatusBadGateway {
+		t.Fatalf("traffic sync with ZLM down should be 502, got %d", code)
+	}
+	var traffic apiResp
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/channels/%d/traffic", B, chans[0].ID), admin, nil, &traffic); code != http.StatusOK {
+		t.Fatalf("get channel traffic failed: %d", code)
+	}
+
+	// --- recording cleanup (no plans -> 0 removed) ---
+	var clean apiResp
+	if code := doJSON(t, http.MethodPost, B+"/recordings/cleanup", admin, nil, &clean); code != http.StatusOK {
+		t.Fatalf("cleanup failed: %d", code)
+	}
+
+	// --- playback helpers ---
+	var provResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/providers", admin, map[string]any{
+		"name": "mock", "kind": "cv", "endpoint": "http://127.0.0.1:1", "enabled": true,
+	}, &provResp)
+	var prov struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(provResp.Data, &prov)
+	var taskResp apiResp
+	doJSON(t, http.MethodPost, B+"/ai/tasks", admin, map[string]any{
+		"name": "sched", "channelId": chans[0].ID, "providerId": prov.ID,
+		"taskType": "cv_detect", "schedule": `{"days":"daily","start":"00:00","end":"23:59"}`,
+	}, &taskResp)
+	var task struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(taskResp.Data, &task)
+	var schedResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/ai/tasks/%d/schedule", B, task.ID), admin, nil, &schedResp)
+	var sched struct {
+		Active bool `json:"active"`
+	}
+	json.Unmarshal(schedResp.Data, &sched)
+	if !sched.Active {
+		t.Fatalf("daily schedule should be active now: %s", schedResp.Data)
+	}
+	var pt apiResp
+	if code := doJSON(t, http.MethodPost, fmt.Sprintf("%s/channels/%d/play-token", B, chans[0].ID), admin, nil, &pt); code != http.StatusOK {
+		t.Fatalf("play-token failed: %d", code)
+	}
+	var verify apiResp
+	doJSON(t, http.MethodGet, B+"/play/verify?stream=x&token=bad&exp=1", admin, nil, &verify)
+	var v struct {
+		Valid bool `json:"valid"`
+	}
+	json.Unmarshal(verify.Data, &v)
+	if v.Valid {
+		t.Fatal("garbage token must not verify")
+	}
+}
+
+// TestPlatformConfig verifies runtime enable/disable of GB28181/EHOME signaling
+// from the platform-config API without restarting the process.
+func TestPlatformConfig(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	var cfgResp apiResp
+	if code := doJSON(t, http.MethodGet, B+"/config/platform", admin, nil, &cfgResp); code != http.StatusOK {
+		t.Fatalf("get platform config: %d", code)
+	}
+	var cfg struct {
+		GB struct {
+			Enabled bool `json:"enabled"`
+			Running bool `json:"running"`
+		} `json:"gb"`
+	}
+	json.Unmarshal(cfgResp.Data, &cfg)
+	if cfg.GB.Enabled || cfg.GB.Running {
+		t.Fatalf("GB should default disabled: %s", cfgResp.Data)
+	}
+
+	var up apiResp
+	if code := doJSON(t, http.MethodPut, B+"/config/platform", admin, map[string]any{"gbEnabled": true}, &up); code != http.StatusOK {
+		t.Fatalf("enable gb: %d", code)
+	}
+	doJSON(t, http.MethodGet, B+"/config/platform", admin, nil, &cfgResp)
+	json.Unmarshal(cfgResp.Data, &cfg)
+	if !cfg.GB.Enabled || !cfg.GB.Running {
+		t.Fatalf("GB should be enabled and running: %s", cfgResp.Data)
+	}
+
+	var gbCfg apiResp
+	doJSON(t, http.MethodGet, B+"/gb/config", admin, nil, &gbCfg)
+	var gb struct {
+		Enabled bool `json:"enabled"`
+		Running bool `json:"running"`
+	}
+	json.Unmarshal(gbCfg.Data, &gb)
+	if !gb.Enabled {
+		t.Fatalf("/gb/config should report enabled: %s", gbCfg.Data)
+	}
+
+	if code := doJSON(t, http.MethodPut, B+"/config/platform", admin, map[string]any{"gbEnabled": false}, &up); code != http.StatusOK {
+		t.Fatalf("disable gb: %d", code)
+	}
+	doJSON(t, http.MethodGet, B+"/config/platform", admin, nil, &cfgResp)
+	json.Unmarshal(cfgResp.Data, &cfg)
+	if cfg.GB.Enabled || cfg.GB.Running {
+		t.Fatalf("GB should be disabled and stopped: %s", cfgResp.Data)
+	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/easyavr/easyavr/internal/access"
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/model"
 )
@@ -20,6 +21,7 @@ import (
 type Backend interface {
 	Start() error
 	Stop()
+	Running() bool
 }
 
 var deviceIDPattern = regexp.MustCompile(`\d{12,20}`)
@@ -56,8 +58,11 @@ func (s *udpBackend) Start() error {
 func (s *udpBackend) Stop() {
 	if s.conn != nil {
 		s.conn.Close()
+		s.conn = nil
 	}
 }
+
+func (s *udpBackend) Running() bool { return s.conn != nil }
 
 func (s *udpBackend) readLoop() {
 	buf := make([]byte, 64*1024)
@@ -77,6 +82,10 @@ func (s *udpBackend) readLoop() {
 func (s *udpBackend) identify(payload []byte, addr *net.UDPAddr) {
 	id := string(deviceIDPattern.Find(payload))
 	if id == "" {
+		return
+	}
+	if allowed, reason := access.Check(s.db, "EHOME", id, "", addr.IP.String(), addr.Port); !allowed {
+		log.Printf("[ehome] device %s from %s denied: %s", id, addr, reason)
 		return
 	}
 	var dev model.Device

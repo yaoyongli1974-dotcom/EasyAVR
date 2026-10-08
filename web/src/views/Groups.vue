@@ -42,6 +42,11 @@
                   </el-select>
                 </el-form-item>
                 <el-form-item label="排序"><el-input-number v-model.number="groupForm.sort" :min="0" /></el-form-item>
+                <el-form-item label="基准经度"><el-input-number v-model.number="groupForm.longitude" :precision="6" :step="0.000001" :min="-180" :max="180" /></el-form-item>
+                <el-form-item label="基准纬度"><el-input-number v-model.number="groupForm.latitude" :precision="6" :step="0.000001" :min="-90" :max="90" /></el-form-item>
+                <el-form-item label=" ">
+                  <span class="hint">分组基准坐标：组内无自身 GPS 的设备在电子地图上按此坐标显示</span>
+                </el-form-item>
               </el-form>
               <div style="padding: 0 20px 20px; border-top: 1px solid var(--el-border-color)">
                 <el-button type="primary" :loading="saving" @click="saveGroup">保存</el-button>
@@ -234,7 +239,7 @@ const saving = ref(false)
 const editGroup = ref<DeviceGroup | null>(null)
 
 const groupForm = reactive<Partial<DeviceGroup>>({
-  name: '', description: '', parentId: 0, sort: 0
+  name: '', description: '', parentId: 0, sort: 0, longitude: 0, latitude: 0
 })
 
 const bindDevicesForm = reactive({ deviceIds: [] as number[] })
@@ -313,9 +318,9 @@ async function loadGroupDetails(id: number) {
 function openGroup(row?: DeviceGroup) {
   editGroup.value = row || null
   if (row) {
-    Object.assign(groupForm, { name: row.name, description: row.description, parentId: row.parentId, sort: row.sort })
+    Object.assign(groupForm, { name: row.name, description: row.description, parentId: row.parentId, sort: row.sort, longitude: row.longitude || 0, latitude: row.latitude || 0 })
   } else {
-    Object.assign(groupForm, { name: '', description: '', parentId: selectedGroup.value?.id || 0, sort: 0 })
+    Object.assign(groupForm, { name: '', description: '', parentId: selectedGroup.value?.id || 0, sort: 0, longitude: 0, latitude: 0 })
   }
   groupVisible.value = true
 }
@@ -331,7 +336,7 @@ async function saveGroup() {
   }
   saving.value = true
   try {
-    const body = { name: groupForm.name, description: groupForm.description, parentId: groupForm.parentId, sort: groupForm.sort }
+    const body = { name: groupForm.name, description: groupForm.description, parentId: groupForm.parentId, sort: groupForm.sort, longitude: groupForm.longitude, latitude: groupForm.latitude }
     if (editGroup.value) await groupApi.update(editGroup.value.id, body)
     else await groupApi.create(body)
     ElMessage.success('已保存')

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -500,4 +501,102 @@ func (a *App) requireGroupPerm(perm string) gin.HandlerFunc {
 		fail(c, http.StatusForbidden, "权限不足："+perm)
 		c.Abort()
 	}
+}
+
+// requirePolicy checks permission via Casbin policy engine.
+// resource: resource type (e.g., "device", "ai:task", "ai:model")
+// action: action (e.g., "create", "read", "update", "delete", "start", "deploy", "infer")
+// domain: optional domain extractor function (e.g., group ID from request)
+func (a *App) requirePolicy(resource, action string, domainFunc func(*gin.Context) string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := currentClaims(c)
+		if claims == nil {
+			fail(c, http.StatusUnauthorized, "unauthenticated")
+			c.Abort()
+			return
+		}
+		if claims.Role == "admin" {
+			c.Next()
+			return
+		}
+
+		domain := ""
+		if domainFunc != nil {
+			domain = domainFunc(c)
+		}
+
+		ok, err := a.policy.CheckPermissionForUser(claims.UserID, claims.Username, claims.Role, resource, action, domain)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "policy check error")
+			c.Abort()
+			return
+		}
+		if !ok {
+			fail(c, http.StatusForbidden, fmt.Sprintf("权限不足: %s:%s", resource, action))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// Domain extractors for common cases
+func domainFromGroupParam(c *gin.Context) string {
+	// Try to get group ID from query/param/body
+	if v := c.Query("groupId"); v != "" {
+		return v
+	}
+	if v := c.Param("groupId"); v != "" {
+		return v
+	}
+	if c.Request.Method != http.MethodGet {
+		var body map[string]any
+		if err := c.ShouldBindJSON(&body); err == nil {
+			if v, ok := body["groupId"].(float64); ok {
+				return fmt.Sprintf("%.0f", v)
+			}
+		}
+	}
+	return ""
+}
+
+func domainFromDeviceGroup(c *gin.Context) string {
+	// Extract group ID from device/channel group membership
+	// This is a fallback for backward compatibility with group-based auth
+	deviceID := extractDeviceOrChannelID(c, "deviceId")
+	if deviceID == 0 {
+		deviceID = extractDeviceOrChannelID(c, "channelId")
+	}
+	if deviceID == 0 {
+		return ""
+	}
+	// Would need DB lookup to get group IDs - skip for now, use empty domain
+	// which matches "*" domain in policies
+	return ""
+}
+
+func extractDeviceOrChannelID(c *gin.Context, param string) uint {
+	if v := c.Query(param); v != "" {
+		if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return uint(id)
+		}
+	}
+	if v := c.Param(param); v != "" {
+		if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return uint(id)
+		}
+	}
+	if v := c.Param("id"); v != "" {
+		path := c.Request.URL.Path
+		if strings.Contains(path, "/devices/") && !strings.Contains(path, "/channels/") && param == "deviceId" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				return uint(id)
+			}
+		} else if strings.Contains(path, "/channels/") && param == "channelId" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				return uint(id)
+			}
+		}
+	}
+	return 0
 }

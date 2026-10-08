@@ -10,7 +10,12 @@
         <el-card>
           <template #header>
             <span>用户列表</span>
-            <el-button type="primary" size="small" style="float: right" @click="openUser()">添加用户</el-button>
+            <div style="float: right">
+              <el-button size="small" @click="exportUsers">导出 CSV</el-button>
+              <el-button size="small" @click="userFileInput?.click()">导入 CSV</el-button>
+              <el-button type="primary" size="small" @click="openUser()">添加用户</el-button>
+            </div>
+            <input ref="userFileInput" type="file" accept=".csv,text/csv" style="display: none" @change="importUsers" />
           </template>
           <el-table :data="users" border>
             <el-table-column prop="id" label="ID" width="60" />
@@ -140,6 +145,37 @@ const editRole = ref<Role | null>(null)
 const saving = ref(false)
 const userForm = reactive({ username: '', nickname: '', password: '', role: 'viewer', enabled: true })
 const roleForm = reactive<{ name: string; description: string; permList: string[] }>({ name: '', description: '', permList: [] })
+const userFileInput = ref<HTMLInputElement>()
+
+async function exportUsers() {
+  try {
+    const blob = await userApi.exportCSV()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'users.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    ElMessage.error('导出失败')
+  }
+}
+
+async function importUsers(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const csv = await file.text()
+  try {
+    const r = await userApi.importCSV(csv)
+    ElMessage.success(`导入完成：新增 ${r.created}，跳过 ${r.skipped}`)
+    load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '导入失败')
+  } finally {
+    input.value = ''
+  }
+}
 
 function splitPerms(s: string) {
   if (!s || s === '*') return s === '*' ? ['*'] : []

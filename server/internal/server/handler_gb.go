@@ -16,12 +16,9 @@ func (a *App) listGBDevices(c *gin.Context) {
 
 // gbConfig exposes the platform SIP parameters needed to configure devices.
 func (a *App) gbConfig(c *gin.Context) {
-	if a.gb == nil {
-		ok(c, gin.H{"enabled": false})
-		return
-	}
 	ok(c, gin.H{
-		"enabled":    true,
+		"enabled":    a.settingBool("gb_enabled", a.cfg.GB.Enabled),
+		"running":    a.gb.Running(),
 		"id":         a.cfg.GB.ID,
 		"realm":      a.cfg.GB.Realm,
 		"listen":     a.cfg.GB.Listen,
@@ -32,7 +29,7 @@ func (a *App) gbConfig(c *gin.Context) {
 }
 
 func (a *App) refreshGBCatalog(c *gin.Context) {
-	if a.gb == nil {
+	if !a.gb.Running() {
 		fail(c, http.StatusBadRequest, "GB28181 signaling is disabled")
 		return
 	}
@@ -46,6 +43,24 @@ func (a *App) refreshGBCatalog(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{"deviceId": gbid, "refreshed": true})
+}
+
+// queryGBMobilePosition asks a GB28181 mobile device to report its position.
+func (a *App) queryGBMobilePosition(c *gin.Context) {
+	if !a.gb.Running() {
+		fail(c, http.StatusBadRequest, "GB28181 signaling is disabled")
+		return
+	}
+	gbid := c.Param("gbid")
+	if gbid == "" {
+		fail(c, http.StatusBadRequest, "device id required")
+		return
+	}
+	if err := a.gb.QueryMobilePosition(gbid); err != nil {
+		fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	ok(c, gin.H{"deviceId": gbid, "requested": true})
 }
 
 // ---- GB28181 cascade (upper platforms) ----
@@ -95,7 +110,7 @@ func (a *App) deleteCascade(c *gin.Context) {
 }
 
 func (a *App) refreshCascade(c *gin.Context) {
-	if a.gb == nil {
+	if !a.gb.Running() {
 		fail(c, http.StatusBadRequest, "GB28181 signaling is disabled")
 		return
 	}
@@ -146,5 +161,42 @@ func (a *App) deleteWhiteList(c *gin.Context) {
 		return
 	}
 	a.db.Delete(&model.GBWhiteList{}, id)
+	ok(c, gin.H{"id": id})
+}
+
+// ---- GB black list ----
+
+func (a *App) listBlackList(c *gin.Context) {
+	var items []model.GBBlackList
+	a.db.Order("id DESC").Find(&items)
+	ok(c, items)
+}
+
+func (a *App) createBlackList(c *gin.Context) {
+	var item model.GBBlackList
+	if err := c.ShouldBindJSON(&item); err != nil {
+		fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if item.DeviceID == "" && item.UA == "" && item.IP == "" && item.Port == 0 {
+		fail(c, http.StatusBadRequest, "至少填写一个匹配条件")
+		return
+	}
+	if item.Protocol == "" {
+		item.Protocol = "GB28181"
+	}
+	if err := a.db.Create(&item).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, item)
+}
+
+func (a *App) deleteBlackList(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	a.db.Delete(&model.GBBlackList{}, id)
 	ok(c, gin.H{"id": id})
 }

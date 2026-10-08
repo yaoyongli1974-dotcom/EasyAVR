@@ -15,7 +15,8 @@ func (a *App) gb35114Config(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{
-		"enabled":          a.cfg.GB35114.Enabled,
+		"enabled":          a.settingBool("gb35114_enabled", a.cfg.GB35114.Enabled),
+		"running":          a.gb.TLSAddr() != "",
 		"whiteList":        a.cfg.GB35114.WhiteList,
 		"certDir":          a.cfg.GB35114.CertDir,
 		"certReady":        a.gb35114.CertReady(),

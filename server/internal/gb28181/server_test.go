@@ -157,6 +157,29 @@ func TestRegisterKeepaliveCatalog(t *testing.T) {
 	if ch.GBChannelID != deviceID || !ch.Online || !strings.HasPrefix(ch.StreamKey, "gb_") {
 		t.Fatalf("unexpected channel: %+v", ch)
 	}
+
+	// 5) mobile position report updates the channel GPS and creates a track.
+	pos := xmlHeader + "<Notify><CmdType>MobilePosition</CmdType><SN>4</SN><DeviceID>" + deviceID +
+		"</DeviceID><Time>2026-10-08T20:00:00</Time><Longitude>116.407400</Longitude><Latitude>39.904200</Latitude>" +
+		"<Speed>12.5</Speed><Direction>90</Direction><Altitude>50</Altitude></Notify>"
+	sendUDP(t, client, serverAddr, manscdp("MESSAGE", client, deviceID, 4, pos))
+	readUDP(t, client)
+
+	waitFor(t, func() bool {
+		var c model.Channel
+		db.Where("gb_device_id = ?", deviceID).First(&c)
+		return c.Longitude != 0 && c.Latitude != 0
+	}, "channel gps from mobile position")
+	var located model.Channel
+	db.Where("gb_device_id = ?", deviceID).First(&located)
+	if located.Longitude < 116.4 || located.Longitude > 116.41 || located.Speed != 12.5 {
+		t.Fatalf("unexpected mobile position: %+v", located)
+	}
+	var tracks int64
+	db.Model(&model.Track{}).Where("channel_id = ? AND source = ?", located.ID, "gb28181").Count(&tracks)
+	if tracks == 0 {
+		t.Fatal("expected a gb28181 track point")
+	}
 }
 
 // TestSecureRegisterOverGMSTLS drives an authenticated REGISTER over the

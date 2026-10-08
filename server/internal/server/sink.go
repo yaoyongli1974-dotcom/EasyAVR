@@ -22,7 +22,7 @@ func (s *eventSink) OnEvent(ev model.AIEvent) {
 			s.search.IndexEvent(ev)
 		}
 		if s.notify != nil {
-			s.notify.Notify(ev)
+			s.notify.Dispatch(ev)
 		}
 		if s.gaCas != nil {
 			s.gaCas.PushEvent(ev)

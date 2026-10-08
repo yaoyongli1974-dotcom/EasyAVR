@@ -1,8 +1,17 @@
 import client from './client'
 import type {
   AIEvent,
+  AIModel,
+  AIModelDeployment,
+  AIModelVersion,
   AIProvider,
   AITask,
+  AITaskSchedule,
+  AlertDelivery,
+  AlertPolicy,
+  AlertPolicyTier,
+  AlertStats,
+  AnnotationTask,
   APIKey,
   APIKeyStats,
   APIRequestLog,
@@ -10,8 +19,13 @@ import type {
   AuditLog,
   AuditLogPage,
   Channel,
+  ChannelDiagnose,
   ChannelGroupChannel,
+  ChannelTraffic,
+  ChannelVQD,
   ClusterNode,
+  Dataset,
+  DatasetSample,
   Device,
   DeviceGroup,
   DeviceGroupDevice,
@@ -19,21 +33,34 @@ import type {
   GA1400Cascade,
   GA1400Subscription,
   GB35114Cert,
+  GBBlackList,
   GBCascade,
   GBDevice,
   GBWhiteList,
+  GeoSuggestion,
   IsapiProbeResult,
+  MapEvent,
+  MapEventStats,
   NotificationChannel,
   NotificationRule,
   OnvifProbeResult,
   Page,
+  PipelineStats,
+  PlatformConfig,
+  PlatformConfigUpdate,
+  PlayTokenResult,
+  PolicyRule,
+  PolicyTestResult,
+  PTZPreset,
   Recording,
   RecordingPlan,
   Role,
   SearchHit,
   Snapshot,
+  StatusLog,
   TrackPoint,
   TrackStats,
+  TrainingJob,
   User,
   UserGroup,
   VideoResource,
@@ -56,6 +83,8 @@ export const userApi = {
   remove: (id: number) => unwrap<{ id: number }>(client.delete(`/users/${id}`)),
   changePassword: (oldPassword: string, newPassword: string) =>
     unwrap<{ id: number }>(client.post('/auth/password', { oldPassword, newPassword })),
+  exportCSV: () => client.get('/users/export', { responseType: 'blob' }).then((r) => r.data as Blob),
+  importCSV: (csv: string) => unwrap<{ created: number; skipped: number }>(client.post('/users/import', { csv })),
 }
 
 export const roleApi = {
@@ -77,6 +106,11 @@ export const deviceApi = {
   channels: (id: number) => unwrap<Channel[]>(client.get(`/devices/${id}/channels`)),
   createChannel: (id: number, body: Partial<Channel>) =>
     unwrap<Channel>(client.post(`/devices/${id}/channels`, body)),
+  exportCSV: () => client.get('/devices/export', { responseType: 'blob' }).then((r) => r.data as Blob),
+  importCSV: (csv: string) => unwrap<{ created: number; skipped: number }>(client.post('/devices/import', { csv })),
+  check: (id: number) => unwrap<{ deviceId: number; online: boolean; status: string; message: string }>(client.post(`/devices/${id}/check`)),
+  checkAll: () => unwrap<{ total: number; online: number }>(client.post('/devices/check')),
+  statusLogs: (id: number) => unwrap<StatusLog[]>(client.get(`/devices/${id}/status-logs`)),
 }
 
 export const channelApi = {
@@ -92,6 +126,21 @@ export const channelApi = {
     unwrap<{ channelId: number; streamKey: string; online: boolean; playUrls: Record<string, string>; pushUrl: string; sourceUrl: string }>(
       client.get(`/channels/${id}/play-urls`),
     ),
+  ptz: (id: number, body: { cmd: string; speed?: number }) => unwrap<{ channelId: number; cmd: string }>(client.post(`/channels/${id}/ptz`, body)),
+  ptzPresets: (id: number) => unwrap<PTZPreset[]>(client.get(`/channels/${id}/ptz/presets`)),
+  savePTZPreset: (id: number, body: { preset: number; name: string }) =>
+    unwrap<{ channelId: number; preset: number; name: string; warning?: string }>(client.post(`/channels/${id}/ptz/presets`, body)),
+  gotoPTZPreset: (id: number, preset: number) =>
+    unwrap<{ channelId: number; preset: number }>(client.post(`/channels/${id}/ptz/presets/${preset}/goto`)),
+  removePTZPreset: (id: number, preset: number) =>
+    unwrap<{ channelId: number; preset: number }>(client.delete(`/channels/${id}/ptz/presets/${preset}`)),
+  diagnose: (id: number, timeoutSec = 12) =>
+    unwrap<ChannelDiagnose>(client.get(`/channels/${id}/diagnose`, { params: { timeoutSec } })),
+  vqd: (id: number, record = false) =>
+    unwrap<ChannelVQD>(client.get(`/channels/${id}/vqd`, { params: { record: record ? 1 : undefined } })),
+  playToken: (id: number) => unwrap<PlayTokenResult>(client.post(`/channels/${id}/play-token`)),
+  traffic: (id: number) => unwrap<{ channelId: number; streamKey: string; online: boolean; traffic: ChannelTraffic; media: Record<string, unknown> }>(client.get(`/channels/${id}/traffic`)),
+  statusLogs: (id: number) => unwrap<StatusLog[]>(client.get(`/channels/${id}/status-logs`)),
 }
 
 export const discoveryApi = {
@@ -132,6 +181,7 @@ export const videoApi = {
   stats: () => unwrap<Record<string, unknown>>(client.get('/video/stats')),
   streams: () => unwrap<unknown[]>(client.get('/video/streams')),
   sync: () => unwrap<{ updated: number }>(client.post('/video/sync')),
+  trafficSync: () => unwrap<{ channels: number; transitions: number }>(client.post('/video/traffic/sync')),
 }
 
 export const aiApi = {
@@ -149,6 +199,38 @@ export const aiApi = {
   startTask: (id: number) => unwrap<{ id: number }>(client.post(`/ai/tasks/${id}/start`)),
   stopTask: (id: number) => unwrap<{ id: number }>(client.post(`/ai/tasks/${id}/stop`)),
   runTask: (id: number) => unwrap<{ events: AIEvent[]; count: number }>(client.post(`/ai/tasks/${id}/run`)),
+  taskSchedule: (id: number) => unwrap<AITaskSchedule>(client.get(`/ai/tasks/${id}/schedule`)),
+}
+
+export const modelApi = {
+  list: (params?: Record<string, unknown>) => unwrap<AIModel[]>(client.get('/ai/models', { params })),
+  create: (body: Partial<AIModel>) => unwrap<AIModel>(client.post('/ai/models', body)),
+  get: (id: number) =>
+    unwrap<{ model: AIModel; versions: AIModelVersion[]; deployments: AIModelDeployment[] }>(client.get(`/ai/models/${id}`)),
+  update: (id: number, body: Partial<AIModel>) => unwrap<AIModel>(client.put(`/ai/models/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/models/${id}`)),
+  stats: () =>
+    unwrap<{ models: number; versions: number; deployments: number; active: number }>(client.get('/ai/model-stats')),
+
+  versions: (modelId: number) => unwrap<AIModelVersion[]>(client.get(`/ai/models/${modelId}/versions`)),
+  createVersion: (modelId: number, body: Partial<AIModelVersion>) =>
+    unwrap<AIModelVersion>(client.post(`/ai/models/${modelId}/versions`, body)),
+  updateVersion: (modelId: number, versionId: number, body: Partial<AIModelVersion>) =>
+    unwrap<AIModelVersion>(client.put(`/ai/models/${modelId}/versions/${versionId}`, body)),
+  archiveVersion: (modelId: number, versionId: number) =>
+    unwrap<{ id: number; status: string }>(client.post(`/ai/models/${modelId}/versions/${versionId}/archive`)),
+  removeVersion: (modelId: number, versionId: number) =>
+    unwrap<{ id: number }>(client.delete(`/ai/models/${modelId}/versions/${versionId}`)),
+
+  deployments: (params?: Record<string, unknown>) =>
+    unwrap<AIModelDeployment[]>(client.get('/ai/deployments', { params })),
+  createDeployment: (body: { modelId: number; versionId: number; providerId: number; name?: string; replicas?: number; config?: string }) =>
+    unwrap<AIModelDeployment>(client.post('/ai/deployments', body)),
+  updateDeployment: (id: number, body: Partial<AIModelDeployment>) =>
+    unwrap<AIModelDeployment>(client.put(`/ai/deployments/${id}`, body)),
+  activateDeployment: (id: number) => unwrap<{ id: number; status: string }>(client.post(`/ai/deployments/${id}/activate`)),
+  stopDeployment: (id: number) => unwrap<{ id: number; status: string }>(client.post(`/ai/deployments/${id}/stop`)),
+  removeDeployment: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/deployments/${id}`)),
 }
 
 export const eventApi = {
@@ -161,6 +243,12 @@ export const systemApi = {
   info: () => unwrap<Record<string, any>>(client.get('/system/info')),
 }
 
+export const configApi = {
+  platform: () => unwrap<PlatformConfig>(client.get('/config/platform')),
+  updatePlatform: (body: PlatformConfigUpdate) =>
+    unwrap<{ warnings: string[] }>(client.put('/config/platform', body)),
+}
+
 export const recordingApi = {
   list: (params?: Record<string, unknown>) => unwrap<Recording[]>(client.get('/recordings', { params })),
   start: (channelId: number) => unwrap<{ id: number }>(client.post(`/channels/${channelId}/record/start`)),
@@ -171,6 +259,9 @@ export const recordingApi = {
   getPlan: (channelId: number) => unwrap<RecordingPlan>(client.get(`/channels/${channelId}/recording-plan`)),
   savePlan: (channelId: number, plan: Partial<RecordingPlan>) =>
     unwrap<RecordingPlan>(client.put(`/channels/${channelId}/recording-plan`, plan)),
+  mark: (id: number, body: { marked: boolean; mark?: string }) =>
+    unwrap<Recording>(client.put(`/recordings/${id}/mark`, body)),
+  cleanup: (days = 0) => unwrap<{ removed: number }>(client.post('/recordings/cleanup', null, { params: { days } })),
 }
 
 export const snapshotApi = {
@@ -195,6 +286,11 @@ export const gbApi = {
   createWhitelist: (body: Partial<GBWhiteList> & { password?: string }) =>
     unwrap<GBWhiteList>(client.post('/gb/whitelist', body)),
   removeWhitelist: (id: number) => unwrap<{ id: number }>(client.delete(`/gb/whitelist/${id}`)),
+
+  blacklist: () => unwrap<GBBlackList[]>(client.get('/gb/blacklist')),
+  createBlacklist: (body: Partial<GBBlackList>) =>
+    unwrap<GBBlackList>(client.post('/gb/blacklist', body)),
+  removeBlacklist: (id: number) => unwrap<{ id: number }>(client.delete(`/gb/blacklist/${id}`)),
 }
 
 export const notifyApi = {
@@ -215,6 +311,65 @@ export const notifyApi = {
 export const searchApi = {
   search: (query: string, topK = 10) =>
     unwrap<{ hits: SearchHit[]; semantic: boolean; count: number }>(client.post('/ai/search', { query, topK })),
+}
+
+export const alertApi = {
+  policies: () => unwrap<AlertPolicy[]>(client.get('/alert/policies')),
+  policy: (id: number) => unwrap<AlertPolicy>(client.get(`/alert/policies/${id}`)),
+  createPolicy: (body: Partial<AlertPolicy>) => unwrap<AlertPolicy>(client.post('/alert/policies', body)),
+  updatePolicy: (id: number, body: Partial<AlertPolicy>) => unwrap<AlertPolicy>(client.put(`/alert/policies/${id}`, body)),
+  removePolicy: (id: number) => unwrap<{ id: number }>(client.delete(`/alert/policies/${id}`)),
+  testPolicy: (id: number) => unwrap<{ id: number; sent: number }>(client.post(`/alert/policies/${id}/test`)),
+  tiers: (id: number) => unwrap<AlertPolicyTier[]>(client.get(`/alert/policies/${id}/tiers`)),
+  createTier: (id: number, body: Partial<AlertPolicyTier>) =>
+    unwrap<AlertPolicyTier>(client.post(`/alert/policies/${id}/tiers`, body)),
+  updateTier: (id: number, tierId: number, body: Partial<AlertPolicyTier>) =>
+    unwrap<AlertPolicyTier>(client.put(`/alert/policies/${id}/tiers/${tierId}`, body)),
+  removeTier: (id: number, tierId: number) =>
+    unwrap<{ id: number }>(client.delete(`/alert/policies/${id}/tiers/${tierId}`)),
+  deliveries: (params?: Record<string, unknown>) =>
+    unwrap<Page<AlertDelivery>>(client.get('/alert/deliveries', { params })),
+  stats: () => unwrap<AlertStats>(client.get('/alert/stats')),
+  ackEvent: (eventId: number) => unwrap<{ id: number; acked: boolean }>(client.post(`/events/${eventId}/ack`)),
+}
+
+export const pipelineApi = {
+  stats: () => unwrap<PipelineStats>(client.get('/ai/pipeline-stats')),
+
+  datasets: () => unwrap<Dataset[]>(client.get('/ai/datasets')),
+  dataset: (id: number) =>
+    unwrap<{ dataset: Dataset; samples: DatasetSample[] }>(client.get(`/ai/datasets/${id}`)),
+  createDataset: (body: Partial<Dataset>) => unwrap<Dataset>(client.post('/ai/datasets', body)),
+  updateDataset: (id: number, body: Partial<Dataset>) => unwrap<Dataset>(client.put(`/ai/datasets/${id}`, body)),
+  removeDataset: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/datasets/${id}`)),
+
+  samples: (id: number, params?: Record<string, unknown>) =>
+    unwrap<DatasetSample[]>(client.get(`/ai/datasets/${id}/samples`, { params })),
+  createSample: (id: number, body: Partial<DatasetSample>) =>
+    unwrap<DatasetSample>(client.post(`/ai/datasets/${id}/samples`, body)),
+  updateSample: (id: number, sampleId: number, body: Partial<DatasetSample>) =>
+    unwrap<DatasetSample>(client.put(`/ai/datasets/${id}/samples/${sampleId}`, body)),
+  removeSample: (id: number, sampleId: number) =>
+    unwrap<{ id: number }>(client.delete(`/ai/datasets/${id}/samples/${sampleId}`)),
+  importSamples: (id: number, body: { eventIds: number[]; split?: string }) =>
+    unwrap<{ created: number; dataset: Dataset }>(client.post(`/ai/datasets/${id}/samples/import`, body)),
+
+  annotations: (params?: Record<string, unknown>) =>
+    unwrap<AnnotationTask[]>(client.get('/ai/annotations', { params })),
+  createAnnotation: (body: Partial<AnnotationTask>) => unwrap<AnnotationTask>(client.post('/ai/annotations', body)),
+  updateAnnotation: (id: number, body: Partial<AnnotationTask>) =>
+    unwrap<AnnotationTask>(client.put(`/ai/annotations/${id}`, body)),
+  completeAnnotation: (id: number) =>
+    unwrap<{ id: number; status: string }>(client.post(`/ai/annotations/${id}/complete`)),
+  removeAnnotation: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/annotations/${id}`)),
+
+  jobs: (params?: Record<string, unknown>) => unwrap<TrainingJob[]>(client.get('/ai/training', { params })),
+  createJob: (body: Partial<TrainingJob>) => unwrap<TrainingJob>(client.post('/ai/training', body)),
+  updateJob: (id: number, body: Partial<TrainingJob>) => unwrap<TrainingJob>(client.put(`/ai/training/${id}`, body)),
+  runJob: (id: number) =>
+    unwrap<{ job: TrainingJob; model: AIModel; version: AIModelVersion }>(client.post(`/ai/training/${id}/run`)),
+  cancelJob: (id: number) => unwrap<{ id: number; status: string }>(client.post(`/ai/training/${id}/cancel`)),
+  removeJob: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/training/${id}`)),
 }
 
 export const clusterApi = {
@@ -262,9 +417,9 @@ export const apiKeyApi = {
 
 export const groupApi = {
   list: () => unwrap<DeviceGroup[]>(client.get('/groups')),
-  create: (body: { name: string; description?: string; parentId?: number; sort?: number }) =>
+  create: (body: { name: string; description?: string; parentId?: number; sort?: number; longitude?: number; latitude?: number }) =>
     unwrap<DeviceGroup>(client.post('/groups', body)),
-  update: (id: number, body: { name?: string; description?: string; parentId?: number; sort?: number }) =>
+  update: (id: number, body: { name?: string; description?: string; parentId?: number; sort?: number; longitude?: number; latitude?: number }) =>
     unwrap<DeviceGroup>(client.put(`/groups/${id}`, body)),
   remove: (id: number) => unwrap<{ id: number }>(client.delete(`/groups/${id}`)),
 
@@ -301,6 +456,14 @@ export const mapApi = {
     unwrap<TrackPoint[]>(client.get('/map/tracks', { params })),
   trackStats: (params?: { deviceId?: number; channelId?: number; start?: string; end?: string }) =>
     unwrap<TrackStats>(client.get('/map/tracks/stats', { params })),
+  events: (params?: Record<string, unknown>) =>
+    unwrap<MapEvent[]>(client.get('/map/events', { params })),
+  eventStats: (params?: Record<string, unknown>) =>
+    unwrap<MapEventStats>(client.get('/map/events/stats', { params })),
+  geocode: (q: string, limit = 8) =>
+    unwrap<{ provider: string; items: GeoSuggestion[] }>(client.get('/map/geocode', { params: { q, limit } })),
+  importCoordinates: (body: { target: 'device' | 'channel'; csv: string }) =>
+    unwrap<{ updated: number; skipped: number }>(client.post('/map/import', body)),
 }
 
 export const auditApi = {
@@ -309,4 +472,17 @@ export const auditApi = {
   get: (id: number) => unwrap<AuditLog>(client.get(`/audit/logs/${id}`)),
   export: (params?: Record<string, unknown>) =>
     client.get('/audit/logs/export', { params, responseType: 'blob' }).then((r) => r.data),
+}
+
+export const policyApi = {
+  list: () => unwrap<PolicyRule[]>(client.get('/policy')),
+  add: (body: { pType: 'p' | 'g'; params: string[] }) =>
+    unwrap<{ added: boolean }>(client.post('/policy', body)),
+  remove: (body: { pType: 'p' | 'g'; params: string[] }) =>
+    unwrap<{ removed: boolean }>(client.delete('/policy', { data: body })),
+  test: (body: { userId: number; username: string; role: string; resource: string; action: string; domain: string }) =>
+    unwrap<PolicyTestResult>(client.post('/policy/test', body)),
+  userRoles: (id: number) =>
+    unwrap<{ userId: number; username: string; roles: string[] }>(client.get(`/policy/user/${id}/roles`)),
+  seed: () => unwrap<{ message: string }>(client.post('/policy/seed')),
 }

@@ -169,6 +169,8 @@ type MediaStream struct {
 	Schema      string `json:"schema"`
 	ReaderCount int    `json:"readerCount"`
 	OriginType  int    `json:"originType"`
+	Bytes       int64  `json:"bytes"`
+	AliveSecond int    `json:"aliveSecond"`
 }
 
 // MediaList returns currently active streams.

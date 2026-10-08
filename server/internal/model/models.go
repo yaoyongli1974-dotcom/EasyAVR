@@ -120,13 +120,139 @@ type AIProvider struct {
 // TaskType: cv_detect, vlm_understand, llm_analyze, vqd (video quality diagnosis).
 type AITask struct {
 	Base
-	Name       string `gorm:"size:128" json:"name"`
-	ChannelID  uint   `gorm:"index" json:"channelId"`
-	ProviderID uint   `gorm:"index" json:"providerId"`
-	TaskType   string `gorm:"size:32;index" json:"taskType"`
-	Config     string `gorm:"type:text" json:"config"` // JSON: roi, interval, labels, prompt
-	Enabled    bool   `gorm:"default:true" json:"enabled"`
-	Status     string `gorm:"size:16;default:stopped" json:"status"`
+	Name        string `gorm:"size:128" json:"name"`
+	ChannelID   uint   `gorm:"index" json:"channelId"`
+	ProviderID  uint   `gorm:"index" json:"providerId"`
+	TaskType    string `gorm:"size:32;index" json:"taskType"`
+	Config      string `gorm:"type:text" json:"config"` // JSON: roi, interval, labels, prompt
+	ROI         string `gorm:"type:text" json:"roi"`    // JSON array of normalized polygon points
+	Sensitivity int    `gorm:"default:50" json:"sensitivity"`
+	Schedule    string `gorm:"type:text" json:"schedule"` // JSON: {days, start, end}
+	Enabled     bool   `gorm:"default:true" json:"enabled"`
+	Status      string `gorm:"size:16;default:stopped" json:"status"`
+}
+
+// AIModel is a registry entry for an AI model, stable across versions.
+// Kind mirrors AIProvider.Kind (cv, vlm, llm, embedding). Task is the concrete
+// capability (detection, classification, ocr, chat, embedding, ...).
+type AIModel struct {
+	Base
+	Name        string `gorm:"size:128;index" json:"name"`
+	Kind        string `gorm:"size:16;index" json:"kind"`
+	Task        string `gorm:"size:64;index" json:"task"`
+	Framework   string `gorm:"size:32" json:"framework"` // onnx, pytorch, tensorrt, openvino, api
+	Source      string `gorm:"size:16;default:local" json:"source"`
+	Description string `gorm:"size:512" json:"description"`
+	Tags        string `gorm:"size:255" json:"tags"`
+	Enabled     bool   `gorm:"default:true" json:"enabled"`
+
+	Versions []AIModelVersion `json:"versions,omitempty" gorm:"-"`
+}
+
+// AIModelVersion is an immutable artifact revision of a model.
+// Status: registered, available, deployed, archived.
+type AIModelVersion struct {
+	Base
+	ModelID   uint   `gorm:"index:idx_model_version,unique" json:"modelId"`
+	Version   string `gorm:"size:32;index:idx_model_version,unique" json:"version"`
+	Status    string `gorm:"size:16;default:registered" json:"status"`
+	Format    string `gorm:"size:32" json:"format"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Checksum  string `gorm:"size:128" json:"checksum"`
+	Path      string `gorm:"size:512" json:"path"`
+	URL       string `gorm:"size:512" json:"url"`
+	Metrics   string `gorm:"type:text" json:"metrics"` // JSON: mAP, accuracy, latencyMs, fps
+	Labels    string `gorm:"type:text" json:"labels"`  // JSON array of class labels
+	Params    string `gorm:"type:text" json:"params"`  // JSON default inference params
+	Notes     string `gorm:"size:512" json:"notes"`
+}
+
+// AIModelDeployment binds a model version to a runtime AIProvider.
+// Status: pending, active, stopped, failed. Health: unknown, healthy, unhealthy.
+type AIModelDeployment struct {
+	Base
+	Name         string     `gorm:"size:128" json:"name"`
+	ModelID      uint       `gorm:"index" json:"modelId"`
+	VersionID    uint       `gorm:"index" json:"versionId"`
+	ProviderID   uint       `gorm:"index" json:"providerId"`
+	Status       string     `gorm:"size:16;default:pending" json:"status"`
+	Replicas     int        `gorm:"default:1" json:"replicas"`
+	Config       string     `gorm:"type:text" json:"config"` // JSON deploy config
+	Health       string     `gorm:"size:16;default:unknown" json:"health"`
+	LastHealthAt *time.Time `json:"lastHealthAt,omitempty"`
+	DeployedAt   *time.Time `json:"deployedAt,omitempty"`
+}
+
+// Dataset is a labeled sample collection used to train models.
+// Kind mirrors AIModel.Kind (detection, classification, embedding, ...).
+// Status: draft, ready, archived.
+type Dataset struct {
+	Base
+	Name         string `gorm:"size:128;index" json:"name"`
+	Description  string `gorm:"size:512" json:"description"`
+	Kind         string `gorm:"size:16;index" json:"kind"`
+	Source       string `gorm:"size:16;default:manual" json:"source"` // events, snapshots, manual, mixed
+	Labels       string `gorm:"type:text" json:"labels"`              // JSON array of class labels
+	Status       string `gorm:"size:16;default:draft" json:"status"`
+	SampleCount  int    `json:"sampleCount"`
+	LabeledCount int    `json:"labeledCount"`
+	CreatedBy    string `gorm:"size:64" json:"createdBy"`
+}
+
+// DatasetSample is one item of a dataset, usually sourced from an AI event
+// snapshot. Labels is JSON (class/bbox annotations). Split: train, val, test.
+// Status: unlabeled, labeled, reviewed.
+type DatasetSample struct {
+	Base
+	DatasetID uint   `gorm:"index" json:"datasetId"`
+	EventID   uint   `gorm:"index" json:"eventId"`
+	ChannelID uint   `gorm:"index" json:"channelId"`
+	ImageURL  string `gorm:"size:512" json:"imageUrl"`
+	Labels    string `gorm:"type:text" json:"labels"`
+	Split     string `gorm:"size:8;default:train" json:"split"`
+	Status    string `gorm:"size:16;default:unlabeled" json:"status"`
+	Note      string `gorm:"size:255" json:"note"`
+}
+
+// AnnotationTask is a labeling job over a dataset.
+// Status: pending, in_progress, completed.
+type AnnotationTask struct {
+	Base
+	Name         string `gorm:"size:128;index" json:"name"`
+	DatasetID    uint   `gorm:"index" json:"datasetId"`
+	Assignee     string `gorm:"size:64" json:"assignee"`
+	Status       string `gorm:"size:16;default:pending" json:"status"`
+	Instructions string `gorm:"size:512" json:"instructions"`
+	Total        int    `json:"total"`
+	Labeled      int    `json:"labeled"`
+}
+
+// TrainingJob is a model training run over a dataset. On success it registers
+// an AIModel (if needed) and an AIModelVersion with the job metrics.
+// Status: queued, running, succeeded, failed, canceled.
+type TrainingJob struct {
+	Base
+	Name        string     `gorm:"size:128;index" json:"name"`
+	DatasetID   uint       `gorm:"index" json:"datasetId"`
+	ModelID     uint       `gorm:"index" json:"modelId"`
+	BaseModelID uint       `json:"baseModelId"`
+	Framework   string     `gorm:"size:32" json:"framework"`
+	HyperParams string     `gorm:"type:text" json:"hyperParams"` // JSON
+	Status      string     `gorm:"size:16;default:queued" json:"status"`
+	Metrics     string     `gorm:"type:text" json:"metrics"` // JSON
+	VersionID   uint       `json:"versionId"`                // produced AIModelVersion
+	Log         string     `gorm:"type:text" json:"log"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+}
+
+// PTZPreset catalogs a pan/tilt/zoom preset on a channel. The preset itself is
+// stored on the device; this table keeps the platform-side name/label.
+type PTZPreset struct {
+	Base
+	ChannelID uint   `gorm:"index:idx_ptz_channel_preset,unique" json:"channelId"`
+	Preset    int    `gorm:"index:idx_ptz_channel_preset,unique" json:"preset"`
+	Name      string `gorm:"size:64" json:"name"`
 }
 
 // AIEvent is an entry in the AI Event Center. Events may be produced by
@@ -148,6 +274,59 @@ type AIEvent struct {
 	// Semantic search vector (JSON float array) produced by an embedding model.
 	Embedding      string `gorm:"type:text" json:"-"`
 	EmbeddingModel string `gorm:"size:64" json:"-"`
+
+	// Acknowledgement for alert escalation (unacked events can escalate to
+	// higher tiers of an AlertPolicy).
+	Acked   bool       `gorm:"default:false;index" json:"acked"`
+	AckedAt *time.Time `json:"ackedAt,omitempty"`
+	AckedBy string     `gorm:"size:64" json:"ackedBy"`
+}
+
+// AlertPolicy replaces the traditional alert plan: a matching rule with ordered
+// escalation tiers dispatched by AI event severity. Tiers with DelaySec>0 are
+// delivered by the escalation scheduler only while the event is unacknowledged.
+type AlertPolicy struct {
+	Base
+	Name        string `gorm:"size:128;index" json:"name"`
+	Description string `gorm:"size:512" json:"description"`
+	Enabled     bool   `gorm:"default:true" json:"enabled"`
+	Priority    int    `gorm:"default:0" json:"priority"`
+	Kind        string `gorm:"size:16" json:"kind"`      // filter by provider kind
+	EventType   string `gorm:"size:64" json:"eventType"` // filter by event type
+	MinLevel    string `gorm:"size:16;default:info" json:"minLevel"`
+	ChannelID   uint   `gorm:"index" json:"channelId"` // 0 = any channel
+	Keywords    string `gorm:"size:255" json:"keywords"`
+	CooldownSec int    `gorm:"default:0" json:"cooldownSec"`
+	AckRequired bool   `gorm:"default:false" json:"ackRequired"`
+
+	Tiers []AlertPolicyTier `gorm:"-" json:"tiers,omitempty"`
+}
+
+// AlertPolicyTier is one escalation step of an AlertPolicy. Tier 0 is the
+// immediate notification; higher tiers escalate until acknowledgement.
+type AlertPolicyTier struct {
+	Base
+	PolicyID  uint   `gorm:"index" json:"policyId"`
+	Tier      int    `gorm:"default:0" json:"tier"`
+	MinLevel  string `gorm:"size:16" json:"minLevel"` // tier applies only if event level >= this
+	DelaySec  int    `gorm:"default:0" json:"delaySec"`
+	TargetIDs string `gorm:"size:255" json:"targetIds"` // comma-separated NotificationChannel IDs
+	Template  string `gorm:"size:512" json:"template"`
+}
+
+// AlertDelivery audits every tier dispatch of an alert policy.
+// Reason: immediate, escalation, test. Status: success, failed.
+type AlertDelivery struct {
+	Base
+	PolicyID    uint   `gorm:"index" json:"policyId"`
+	PolicyName  string `gorm:"size:128" json:"policyName"`
+	Tier        int    `json:"tier"`
+	EventID     uint   `gorm:"index" json:"eventId"`
+	ChannelID   uint   `gorm:"index" json:"channelId"` // NotificationChannel ID
+	ChannelName string `gorm:"size:64" json:"channelName"`
+	Reason      string `gorm:"size:32" json:"reason"`
+	Status      string `gorm:"size:16" json:"status"`
+	Error       string `gorm:"size:512" json:"error"`
 }
 
 // Track stores a GPS position point for device/channel trajectory (手册 3.3.5 轨迹跟踪).
@@ -177,6 +356,10 @@ type Recording struct {
 	SizeBytes int64     `json:"sizeBytes"`
 	Duration  int       `json:"duration"` // seconds
 	StartTime time.Time `json:"startTime"`
+
+	// Emergency mark for quick retrieval (手册 3.3.3 紧急标记).
+	Marked bool   `gorm:"default:false;index" json:"marked"`
+	Mark   string `gorm:"size:255" json:"mark"`
 }
 
 // RecordingPlan schedules automatic recording for a channel.
@@ -276,6 +459,15 @@ type GBCascade struct {
 	LastHeartbeat time.Time `json:"lastHeartbeat"`
 }
 
+// PlatformSetting is a persisted runtime platform setting (key/value), editable
+// from the platform-config page. Values override environment defaults for
+// features that can be started/stopped at runtime (手册 3.7 平台配置).
+type PlatformSetting struct {
+	Base
+	Key   string `gorm:"uniqueIndex;size:64" json:"key"`
+	Value string `gorm:"size:255" json:"value"`
+}
+
 // GBWhiteList restricts which GB28181/EHOME devices may register.
 type GBWhiteList struct {
 	Base
@@ -286,6 +478,45 @@ type GBWhiteList struct {
 	Password    string `gorm:"size:128" json:"-"`
 	Enabled     bool   `gorm:"default:true" json:"enabled"`
 	Description string `gorm:"size:255" json:"description"`
+}
+
+// GBBlackList blocks malicious GB28181/EHOME registrations. A rule matches when
+// all of its non-empty fields equal the registering device; any match blocks the
+// device (手册 3.7.4.3 黑名单).
+type GBBlackList struct {
+	Base
+	DeviceID    string `gorm:"size:64;index" json:"deviceId"`
+	UA          string `gorm:"size:128" json:"ua"`
+	IP          string `gorm:"size:64" json:"ip"`
+	Port        int    `json:"port"`
+	Protocol    string `gorm:"size:16;default:GB28181" json:"protocol"`
+	Enabled     bool   `gorm:"default:true" json:"enabled"`
+	Description string `gorm:"size:255" json:"description"`
+}
+
+// StatusLog records device/channel online/offline transitions and health check
+// results, powering the channel "消息/状态记录" view (手册 3.2.3).
+type StatusLog struct {
+	Base
+	DeviceID  uint      `gorm:"index" json:"deviceId"`
+	ChannelID uint      `gorm:"index" json:"channelId"`
+	Target    string    `gorm:"size:16;index" json:"target"` // device | channel
+	Online    bool      `json:"online"`
+	Source    string    `gorm:"size:16" json:"source"` // poll, check, register, gb28181
+	Message   string    `gorm:"size:512" json:"message"`
+	IP        string    `gorm:"size:64" json:"ip"`
+	LoggedAt  time.Time `gorm:"index" json:"loggedAt"`
+}
+
+// ChannelTraffic is the latest accumulated ingress bytes for a channel, sampled
+// from the media kernel (手册 3.2.3 流量).
+type ChannelTraffic struct {
+	Base
+	ChannelID  uint      `gorm:"uniqueIndex" json:"channelId"`
+	StreamKey  string    `gorm:"size:64" json:"streamKey"`
+	Online     bool      `json:"online"`
+	Bytes      int64     `json:"bytes"` // cumulative ingress bytes reported by ZLM
+	LastSample time.Time `json:"lastSample"`
 }
 
 // GB35114Cert is a device certificate issued by the platform's SM2 CA.
@@ -374,6 +605,11 @@ type DeviceGroup struct {
 	ParentID    uint   `gorm:"index" json:"parentId"`
 	Path        string `gorm:"size:255;index" json:"path"` // e.g. "/1/3/7/"
 	Sort        int    `gorm:"default:0" json:"sort"`
+
+	// Base coordinate: devices/channels in this group without their own GPS are
+	// shown here on the map (手册 3.3.4 group base point).
+	Longitude float64 `json:"longitude"`
+	Latitude  float64 `json:"latitude"`
 }
 
 // DeviceGroupDevice binds a device to a group (many-to-many).

@@ -133,8 +133,67 @@ export interface AITask {
   providerId: number
   taskType: string
   config: string
+  roi: string
+  sensitivity: number
+  schedule: string
   enabled: boolean
   status: string
+}
+
+export interface AITaskSchedule {
+  taskId: number
+  schedule: { days: string; start: string; end: string }
+  active: boolean
+  sensitivity: number
+  roi: string
+}
+
+export interface AIModel {
+  id: number
+  name: string
+  kind: 'cv' | 'vlm' | 'llm' | 'embedding'
+  task: string
+  framework: string
+  source: string
+  description: string
+  tags: string
+  enabled: boolean
+  versionCount?: number
+  latestVersion?: string
+}
+
+export interface AIModelVersion {
+  id: number
+  modelId: number
+  version: string
+  status: string
+  format: string
+  sizeBytes: number
+  checksum: string
+  path: string
+  url: string
+  metrics: string
+  labels: string
+  params: string
+  notes: string
+  createdAt: string
+}
+
+export interface AIModelDeployment {
+  id: number
+  name: string
+  modelId: number
+  versionId: number
+  providerId: number
+  status: string
+  replicas: number
+  config: string
+  health: string
+  deployedAt?: string
+  lastHealthAt?: string
+  modelName?: string
+  version?: string
+  providerName?: string
 }
 
 export interface AIEvent {
@@ -151,6 +210,118 @@ export interface AIEvent {
   snapshot: string
   occurredAt: string
   createdAt: string
+  acked: boolean
+  ackedAt?: string
+  ackedBy: string
+}
+
+export interface AlertPolicy {
+  id: number
+  name: string
+  description: string
+  enabled: boolean
+  priority: number
+  kind: string
+  eventType: string
+  minLevel: string
+  channelId: number
+  keywords: string
+  cooldownSec: number
+  ackRequired: boolean
+  tiers?: AlertPolicyTier[]
+}
+
+export interface AlertPolicyTier {
+  id: number
+  policyId: number
+  tier: number
+  minLevel: string
+  delaySec: number
+  targetIds: string
+  template: string
+}
+
+export interface AlertDelivery {
+  id: number
+  policyId: number
+  policyName: string
+  tier: number
+  eventId: number
+  channelId: number
+  channelName: string
+  reason: string
+  status: string
+  error: string
+  createdAt: string
+}
+
+export interface AlertStats {
+  policies: number
+  enabled: number
+  deliveries: number
+  failed: number
+  last24h: number
+}
+
+export interface Dataset {
+  id: number
+  name: string
+  description: string
+  kind: string
+  source: string
+  labels: string
+  status: string
+  sampleCount: number
+  labeledCount: number
+  createdBy: string
+}
+
+export interface DatasetSample {
+  id: number
+  datasetId: number
+  eventId: number
+  channelId: number
+  imageUrl: string
+  labels: string
+  split: string
+  status: string
+  note: string
+}
+
+export interface AnnotationTask {
+  id: number
+  name: string
+  datasetId: number
+  assignee: string
+  status: string
+  instructions: string
+  total: number
+  labeled: number
+}
+
+export interface TrainingJob {
+  id: number
+  name: string
+  datasetId: number
+  modelId: number
+  baseModelId: number
+  framework: string
+  hyperParams: string
+  status: string
+  metrics: string
+  versionId: number
+  log: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface PipelineStats {
+  datasets: number
+  samples: number
+  labeled: number
+  annotations: number
+  jobs: number
+  activeJobs: number
 }
 
 export interface VideoResource {
@@ -163,6 +334,19 @@ export interface VideoResource {
   sizeBytes: number
   duration: number
   tags: string
+}
+
+export interface MapEvent extends AIEvent {
+  channelName: string
+  longitude: number
+  latitude: number
+}
+
+export interface MapEventStats {
+  total: number
+  located: number
+  byType: Record<string, number>
+  byLevel: Record<string, number>
 }
 
 export interface Page<T> {
@@ -182,6 +366,29 @@ export interface Recording {
   sizeBytes: number
   duration: number
   startTime: string
+  marked: boolean
+  mark: string
+}
+
+export interface ChannelTraffic {
+  id?: number
+  channelId: number
+  streamKey: string
+  online: boolean
+  bytes: number
+  lastSample: string
+}
+
+export interface StatusLog {
+  id: number
+  deviceId: number
+  channelId: number
+  target: string
+  online: boolean
+  source: string
+  message: string
+  ip: string
+  loggedAt: string
 }
 
 export interface RecordingPlan {
@@ -278,6 +485,17 @@ export interface GBWhiteList {
   description: string
 }
 
+export interface GBBlackList {
+  id: number
+  deviceId: string
+  ua: string
+  ip: string
+  port: number
+  protocol: string
+  enabled: boolean
+  description: string
+}
+
 export interface SearchHit {
   event: AIEvent
   score: number
@@ -363,6 +581,88 @@ export interface DeviceGroup {
   parentId: number
   path: string
   sort: number
+  longitude: number
+  latitude: number
+}
+
+export interface GeoSuggestion {
+  name: string
+  address: string
+  longitude: number
+  latitude: number
+  source: string
+}
+
+export interface PTZPreset {
+  id: number
+  channelId: number
+  preset: number
+  name: string
+}
+
+export interface ChannelDiagnose {
+  channelId: number
+  name: string
+  sourceUrl: string
+  online: boolean
+  status: string
+  error?: string
+  probe?: {
+    format: string
+    duration: number
+    bitRate: number
+    streams: number
+    latencyMs: number
+    video?: { codec: string; profile: string; width: number; height: number; pixFmt: string; bitRate: number; frameRate: number }
+    audio?: { codec: string; sampleRate: number; channels: number }
+  }
+}
+
+export interface ChannelVQD {
+  channelId: number
+  name: string
+  status: string
+  error?: string
+  level?: string
+  eventId?: number
+  metrics?: {
+    width: number
+    height: number
+    brightness: number
+    contrast: number
+    sharpness: number
+    blackRatio: number
+    blueRatio: number
+    domRatio: number
+    blockiness: number
+    noise: number
+    colorCast: string
+    castScore: number
+  }
+  temporal?: { frames: number; meanDiff: number; maxShift: number; shakeHits: number }
+  issues?: { code: string; level: string; message: string }[]
+}
+
+export interface PlayTokenResult {
+  channelId: number
+  streamKey: string
+  auth: boolean
+  playUrls: Record<string, string>
+  expiresAt?: string
+}
+
+export interface PlatformConfig {
+  gb: { enabled: boolean; running: boolean; listen: string; id: string; realm: string; password: string; rtpIp: string }
+  ehome: { enabled: boolean; running: boolean; cmsListen: string; smsListen: string; publicIp: string }
+  gb35114: { enabled: boolean; running: boolean; sipListen: string; requireClient: boolean; certDir: string }
+  playback: { auth: boolean; tokenTtlMin: number; whitelist: string[] }
+  monitorSec: number
+}
+
+export interface PlatformConfigUpdate {
+  gbEnabled?: boolean
+  ehomeEnabled?: boolean
+  gb35114Enabled?: boolean
 }
 
 export interface DeviceGroupDevice {
@@ -438,4 +738,13 @@ export interface AuditLogPage {
   total: number
   page: number
   pageSize: number
+}
+
+export interface PolicyRule {
+  pType: 'p' | 'g'
+  params: string[]
+}
+
+export interface PolicyTestResult {
+  allowed: boolean
 }

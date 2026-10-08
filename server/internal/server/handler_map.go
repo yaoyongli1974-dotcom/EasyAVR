@@ -4,9 +4,11 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/easyavr/easyavr/internal/model"
 )
@@ -30,7 +32,7 @@ func (a *App) listMapDevices(c *gin.Context) {
 // listMapChannels returns channels with GPS coordinates for map display.
 func (a *App) listMapChannels(c *gin.Context) {
 	var channels []model.Channel
-	query := a.db.Where("longitude != 0 AND latitude != 0").Preload("Device")
+	query := a.db.Where("longitude != 0 AND latitude != 0")
 	if deviceID := c.Query("deviceId"); deviceID != "" {
 		query = query.Where("device_id = ?", deviceID)
 	}
@@ -261,6 +263,194 @@ func (a *App) getTrackStats(c *gin.Context) {
 		"maxAltitude":   maxAlt,
 		"durationSec":   duration,
 	})
+}
+
+// ---- AI event map ----
+
+// geoCoord is a channel GPS position used to place events on the map.
+type geoCoord struct {
+	Name      string
+	Longitude float64
+	Latitude  float64
+}
+
+// channelCoords indexes channels that have a GPS position by channel id.
+func (a *App) channelCoords() map[uint]geoCoord {
+	var channels []model.Channel
+	a.db.Select("id, name, longitude, latitude").
+		Where("longitude != 0 AND latitude != 0").Find(&channels)
+	coords := make(map[uint]geoCoord, len(channels))
+	for _, ch := range channels {
+		coords[ch.ID] = geoCoord{Name: ch.Name, Longitude: ch.Longitude, Latitude: ch.Latitude}
+	}
+	return coords
+}
+
+// mapEventsQuery builds the filtered AI event query shared by list/stats.
+func mapEventsQuery(db *gorm.DB, c *gin.Context) *gorm.DB {
+	q := db.Model(&model.AIEvent{})
+	if v := c.Query("kind"); v != "" {
+		q = q.Where("kind = ?", v)
+	}
+	if v := c.Query("level"); v != "" {
+		q = q.Where("level = ?", v)
+	}
+	if v := c.Query("eventType"); v != "" {
+		q = q.Where("event_type = ?", v)
+	}
+	if v := c.Query("channelId"); v != "" {
+		if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+			q = q.Where("channel_id = ?", id)
+		}
+	}
+	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
+		like := "%" + kw + "%"
+		q = q.Where("summary LIKE ? OR event_type LIKE ?", like, like)
+	}
+	if from := parseTime(c.Query("from")); from != nil {
+		q = q.Where("occurred_at >= ?", *from)
+	}
+	if to := parseTime(c.Query("to")); to != nil {
+		q = q.Where("occurred_at <= ?", *to)
+	}
+	return q
+}
+
+type mapEventItem struct {
+	model.AIEvent
+	ChannelName string  `json:"channelName"`
+	Longitude   float64 `json:"longitude"`
+	Latitude    float64 `json:"latitude"`
+}
+
+// listMapEvents returns AI events placed on the map via their channel GPS.
+func (a *App) listMapEvents(c *gin.Context) {
+	coords := a.channelCoords()
+	if len(coords) == 0 {
+		ok(c, []mapEventItem{})
+		return
+	}
+	limit := 500
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 5000 {
+			limit = v
+		}
+	}
+	var events []model.AIEvent
+	mapEventsQuery(a.db, c).Order("occurred_at DESC").Limit(limit).Find(&events)
+
+	items := make([]mapEventItem, 0, len(events))
+	for _, e := range events {
+		cd, found := coords[e.ChannelID]
+		if !found {
+			continue
+		}
+		items = append(items, mapEventItem{AIEvent: e, ChannelName: cd.Name, Longitude: cd.Longitude, Latitude: cd.Latitude})
+	}
+	ok(c, items)
+}
+
+// mapEventStats aggregates located AI events by type and level.
+func (a *App) mapEventStats(c *gin.Context) {
+	coords := a.channelCoords()
+	var events []model.AIEvent
+	mapEventsQuery(a.db, c).Find(&events)
+
+	byType := map[string]int{}
+	byLevel := map[string]int{}
+	located := 0
+	for _, e := range events {
+		if _, found := coords[e.ChannelID]; !found {
+			continue
+		}
+		located++
+		byType[e.EventType]++
+		byLevel[e.Level]++
+	}
+	ok(c, gin.H{
+		"total":   len(events),
+		"located": located,
+		"byType":  byType,
+		"byLevel": byLevel,
+	})
+}
+
+// searchGeocode resolves a free-text address/place query to coordinates for the
+// map search box (autocomplete). Uses AMap when configured, else Nominatim.
+func (a *App) searchGeocode(c *gin.Context) {
+	q := c.Query("q")
+	limit := 8
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+			limit = n
+		}
+	}
+	items, err := a.geo.Search(c.Request.Context(), q, limit)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	ok(c, gin.H{"provider": a.geo.Provider(), "items": items})
+}
+
+// importMapCoordinates bulk-sets device/channel coordinates from CSV lines of
+// "name,longitude,latitude[,altitude]". Existing rows are matched by name.
+func (a *App) importMapCoordinates(c *gin.Context) {
+	var req struct {
+		Target string `json:"target"` // device | channel
+		CSV    string `json:"csv"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.CSV) == "" {
+		fail(c, http.StatusBadRequest, "csv is required")
+		return
+	}
+	if req.Target != "channel" {
+		req.Target = "device"
+	}
+	now := time.Now()
+	updated, skipped := 0, 0
+	for _, line := range strings.Split(req.CSV, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		if len(fields) < 3 {
+			skipped++
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		lon, e1 := strconv.ParseFloat(strings.TrimSpace(fields[1]), 64)
+		lat, e2 := strconv.ParseFloat(strings.TrimSpace(fields[2]), 64)
+		if name == "" || e1 != nil || e2 != nil {
+			skipped++
+			continue
+		}
+		var alt float64
+		if len(fields) >= 4 {
+			alt, _ = strconv.ParseFloat(strings.TrimSpace(fields[3]), 64)
+		}
+		if req.Target == "channel" {
+			var ch model.Channel
+			if err := a.db.Where("name = ?", name).First(&ch).Error; err != nil {
+				skipped++
+				continue
+			}
+			a.db.Model(&ch).Updates(map[string]any{"longitude": lon, "latitude": lat, "altitude": alt, "gps_time": &now})
+			a.db.Create(&model.Track{DeviceID: ch.DeviceID, ChannelID: ch.ID, Longitude: lon, Latitude: lat, Altitude: alt, Source: "import", TrackTime: now})
+			updated++
+		} else {
+			var d model.Device
+			if err := a.db.Where("name = ?", name).First(&d).Error; err != nil {
+				skipped++
+				continue
+			}
+			a.db.Model(&d).Updates(map[string]any{"longitude": lon, "latitude": lat, "altitude": alt, "gps_time": &now})
+			a.db.Create(&model.Track{DeviceID: d.ID, Longitude: lon, Latitude: lat, Altitude: alt, Source: "import", TrackTime: now})
+			updated++
+		}
+	}
+	ok(c, gin.H{"updated": updated, "skipped": skipped})
 }
 
 // haversine calculates distance between two lat/lng points in meters.

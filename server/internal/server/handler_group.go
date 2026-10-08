@@ -19,10 +19,12 @@ func (a *App) listGroups(c *gin.Context) {
 }
 
 type groupRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	ParentID    uint   `json:"parentId"`
-	Sort        int    `json:"sort"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	ParentID    uint    `json:"parentId"`
+	Sort        int     `json:"sort"`
+	Longitude   float64 `json:"longitude"`
+	Latitude    float64 `json:"latitude"`
 }
 
 func (a *App) createGroup(c *gin.Context) {
@@ -45,7 +47,7 @@ func (a *App) createGroup(c *gin.Context) {
 		}
 		path = parent.Path + strconv.FormatUint(uint64(parent.ID), 10) + "/"
 	}
-	g := model.DeviceGroup{Name: req.Name, Description: req.Description, ParentID: req.ParentID, Path: path, Sort: req.Sort}
+	g := model.DeviceGroup{Name: req.Name, Description: req.Description, ParentID: req.ParentID, Path: path, Sort: req.Sort, Longitude: req.Longitude, Latitude: req.Latitude}
 	if err := a.db.Create(&g).Error; err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -80,6 +82,10 @@ func (a *App) updateGroup(c *gin.Context) {
 	}
 	if req.Sort != 0 {
 		updates["sort"] = req.Sort
+	}
+	if req.Longitude != 0 || req.Latitude != 0 {
+		updates["longitude"] = req.Longitude
+		updates["latitude"] = req.Latitude
 	}
 	// Parent change requires path rebuild
 	if req.ParentID != g.ParentID {

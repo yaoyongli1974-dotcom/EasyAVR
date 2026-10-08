@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +23,11 @@ import (
 	"github.com/easyavr/easyavr/internal/ga1400"
 	"github.com/easyavr/easyavr/internal/gb28181"
 	"github.com/easyavr/easyavr/internal/gb35114"
+	"github.com/easyavr/easyavr/internal/geo"
 	"github.com/easyavr/easyavr/internal/model"
 	"github.com/easyavr/easyavr/internal/notify"
 	"github.com/easyavr/easyavr/internal/openapi"
+	"github.com/easyavr/easyavr/internal/policy"
 	"github.com/easyavr/easyavr/internal/recording"
 	"github.com/easyavr/easyavr/internal/search"
 	"github.com/easyavr/easyavr/internal/snapshot"
@@ -53,6 +56,8 @@ type App struct {
 	sink    *eventSink
 	limiter *openapi.Limiter
 	engine  *gin.Engine
+	policy  *policy.PolicyEngine
+	geo     *geo.Geocoder
 }
 
 // New assembles the application and its routes.
@@ -64,6 +69,14 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 	notifySvc := notify.NewService(db)
 	searchSvc := search.NewService(db, cfg.PGVector)
 	sink := &eventSink{search: searchSvc, notify: notifySvc}
+	policyEngine, err := policy.NewPolicyEngine(db)
+	if err != nil {
+		log.Fatalf("[easyavr] policy engine init failed: %v", err)
+	}
+	// Seed default policies for backward compatibility
+	if err := policyEngine.SeedDefaultPolicies(); err != nil {
+		log.Printf("[easyavr] seed policies: %v", err)
+	}
 	a := &App{
 		cfg:     cfg,
 		db:      db,
@@ -79,26 +92,39 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 		cluster: cluster.NewService(cfg.Cluster, db),
 		sink:    sink,
 		limiter: openapi.NewLimiter(),
+		policy:  policyEngine,
+		geo:     geo.New(cfg.Map.AMapKey),
 	}
 	a.runner.SetSink(sink)
-	if cfg.GB.Enabled {
-		a.gb = gb28181.NewServer(cfg.GB, db, zlm)
-		a.gb.SetSink(sink)
-	}
+	a.gb = gb28181.NewServer(cfg.GB, db, zlm)
+	a.gb.SetSink(sink)
+	a.ehome = ehome.NewServer(cfg.EHOME, db)
+	a.gb35114 = gb35114.NewService(db, cfg.GB35114)
+	a.seedPlatformSettings()
 	if cfg.GA1400.Enabled {
 		a.ga1400 = ga1400.NewHandler(db, cfg.GA1400)
 		a.ga1400.SetSink(sink)
 		a.gaCas = ga1400.NewCascadeService(db, cfg.GA1400)
 		sink.gaCas = a.gaCas
 	}
-	if cfg.EHOME.Enabled {
-		a.ehome = ehome.NewServer(cfg.EHOME, db)
-	}
-	if cfg.GB35114.Enabled {
-		a.gb35114 = gb35114.NewService(db, cfg.GB35114)
-	}
 	a.engine = a.buildRouter()
 	return a
+}
+
+// seedPlatformSettings initializes runtime settings from env defaults on first
+// boot so the platform-config page has a starting state.
+func (a *App) seedPlatformSettings() {
+	defaults := map[string]bool{
+		"gb_enabled":      a.cfg.GB.Enabled,
+		"ehome_enabled":   a.cfg.EHOME.Enabled,
+		"gb35114_enabled": a.cfg.GB35114.Enabled,
+	}
+	for k, v := range defaults {
+		var s model.PlatformSetting
+		if err := a.db.Where("key = ?", k).First(&s).Error; err != nil {
+			a.db.Create(&model.PlatformSetting{Key: k, Value: strconv.FormatBool(v)})
+		}
+	}
 }
 
 // Engine exposes the underlying gin engine (used in tests).
@@ -109,11 +135,15 @@ func (a *App) Run() error {
 	ctx := context.Background()
 	a.rec.StartScheduler(ctx, time.Minute)
 	a.snaps.StartScheduler(ctx, 30*time.Second)
+	a.notify.StartEscalation(ctx, time.Minute)
 	a.cluster.Start(ctx)
+	if a.cfg.MonitorSec > 0 {
+		a.startMonitor(make(chan struct{}), time.Duration(a.cfg.MonitorSec)*time.Second)
+	}
 	if a.gaCas != nil {
 		a.gaCas.Start(ctx)
 	}
-	if a.gb != nil {
+	if a.settingBool("gb_enabled", a.cfg.GB.Enabled) {
 		if err := a.gb.Start(); err != nil {
 			log.Printf("[easyavr] GB28181 SIP server disabled: %v", err)
 		} else {
@@ -122,12 +152,12 @@ func (a *App) Run() error {
 			a.gb.StartCascades(cascades)
 		}
 	}
-	if a.ehome != nil {
+	if a.settingBool("ehome_enabled", a.cfg.EHOME.Enabled) {
 		if err := a.ehome.Start(); err != nil {
 			log.Printf("[easyavr] EHOME server disabled: %v", err)
 		}
 	}
-	if a.gb != nil && a.gb35114 != nil && a.cfg.GB35114.SIPListen != "" {
+	if a.settingBool("gb35114_enabled", a.cfg.GB35114.Enabled) && a.cfg.GB35114.SIPListen != "" {
 		if err := a.startSecureSIP(); err != nil {
 			log.Printf("[easyavr] GB35114 secure SIP disabled: %v", err)
 		}

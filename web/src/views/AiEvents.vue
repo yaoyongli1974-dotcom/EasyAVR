@@ -52,6 +52,12 @@
             <el-tag :type="levelType(row.level)">{{ row.level }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="确认" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.acked" type="success" size="small">已确认</el-tag>
+            <el-button v-else link type="primary" @click.stop="ack(row)">确认</el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="summary" label="摘要" min-width="280" show-overflow-tooltip />
       </el-table>
       <el-pagination
@@ -72,6 +78,10 @@
         <el-descriptions-item label="通道ID">{{ current.channelId }}</el-descriptions-item>
         <el-descriptions-item label="时间">{{ format(current.occurredAt) }}</el-descriptions-item>
         <el-descriptions-item label="摘要">{{ current.summary }}</el-descriptions-item>
+        <el-descriptions-item label="确认状态">
+          <el-tag v-if="current.acked" type="success" size="small">已确认 {{ current.ackedBy }}</el-tag>
+          <el-button v-else link type="primary" @click="ack(current)">确认事件</el-button>
+        </el-descriptions-item>
       </el-descriptions>
       <pre v-if="current" class="payload">{{ pretty(current.payload) }}</pre>
     </el-drawer>
@@ -80,7 +90,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { eventApi } from '../api'
+import { ElMessage } from 'element-plus'
+import { alertApi, eventApi } from '../api'
 import type { AIEvent } from '../types'
 
 const events = ref<AIEvent[]>([])
@@ -124,6 +135,17 @@ function pretty(s: string) {
 function open(row: AIEvent) {
   current.value = row
   drawer.value = true
+}
+
+async function ack(row: AIEvent) {
+  try {
+    await alertApi.ackEvent(row.id)
+    row.acked = true
+    if (current.value?.id === row.id) current.value.acked = true
+    ElMessage.success('已确认')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '确认失败')
+  }
 }
 
 onMounted(load)

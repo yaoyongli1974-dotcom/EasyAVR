@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -151,10 +153,78 @@ func (a *App) updateTask(c *gin.Context) {
 	if req.Config != "" {
 		updates["config"] = req.Config
 	}
+	if req.ROI != "" {
+		updates["roi"] = req.ROI
+	}
+	if req.Sensitivity != 0 {
+		updates["sensitivity"] = req.Sensitivity
+	}
+	if req.Schedule != "" {
+		updates["schedule"] = req.Schedule
+	}
 	updates["enabled"] = req.Enabled
 	a.db.Model(&t).Updates(updates)
 	a.db.First(&t, id)
 	ok(c, t)
+}
+
+type scheduleSpec struct {
+	Days  string `json:"days"`  // daily | workday | weekend | "1,2,3" (1=Mon..7=Sun)
+	Start string `json:"start"` // HH:MM
+	End   string `json:"end"`   // HH:MM
+}
+
+// taskSchedule reports the analysis plan and whether it is active right now.
+func (a *App) taskSchedule(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var t model.AITask
+	if err := a.db.First(&t, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	var spec scheduleSpec
+	if t.Schedule != "" {
+		_ = json.Unmarshal([]byte(t.Schedule), &spec)
+	}
+	ok(c, gin.H{"taskId": id, "schedule": spec, "active": scheduleActive(spec, time.Now()), "sensitivity": t.Sensitivity, "roi": t.ROI})
+}
+
+func scheduleActive(spec scheduleSpec, now time.Time) bool {
+	if spec.Days != "" && spec.Days != "daily" {
+		wd := int(now.Weekday())
+		if wd == 0 {
+			wd = 7
+		}
+		okDay := false
+		switch spec.Days {
+		case "workday":
+			okDay = wd >= 1 && wd <= 5
+		case "weekend":
+			okDay = wd == 6 || wd == 7
+		default:
+			for _, p := range strings.Split(spec.Days, ",") {
+				if strings.TrimSpace(p) == strconv.Itoa(wd) {
+					okDay = true
+					break
+				}
+			}
+		}
+		if !okDay {
+			return false
+		}
+	}
+	if spec.Start != "" && spec.End != "" {
+		cur := now.Format("15:04")
+		if spec.Start <= spec.End {
+			return cur >= spec.Start && cur <= spec.End
+		}
+		// Overnight window, e.g. 22:00-06:00.
+		return cur >= spec.Start || cur <= spec.End
+	}
+	return true
 }
 
 func (a *App) deleteTask(c *gin.Context) {

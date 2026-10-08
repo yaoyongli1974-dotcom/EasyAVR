@@ -5,7 +5,11 @@
       <div>
         <el-input v-model="keyword" placeholder="搜索名称/IP" style="width: 200px; margin-right: 8px" clearable @keyup.enter="load" />
         <el-button @click="openDiscovery">主动发现</el-button>
+        <el-button @click="exportDevices">导出 CSV</el-button>
+        <el-button @click="triggerImport">导入 CSV</el-button>
+        <el-button @click="checkAll" :loading="checkingAll">批量检测</el-button>
         <el-button type="primary" @click="openCreate">添加设备</el-button>
+        <input ref="fileInput" type="file" accept=".csv,text/csv" style="display: none" @change="importDevices" />
       </div>
     </div>
 
@@ -23,9 +27,11 @@
       <el-table-column label="通道" width="80">
         <template #default="{ row }">{{ row.channels?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="220">
+      <el-table-column label="操作" width="300">
         <template #default="{ row }">
           <el-button link type="primary" @click="openChannels(row)">通道</el-button>
+          <el-button link type="success" @click="checkDevice(row)">检测</el-button>
+          <el-button link @click="openStatusLogs(row)">消息</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -192,6 +198,22 @@
         </el-table-column>
       </el-table>
     </el-drawer>
+
+    <el-dialog v-model="statusVisible" :title="`状态记录 · ${current?.name || ''}`" width="640px">
+      <el-table :data="statusLogs" border size="small" max-height="420">
+        <el-table-column label="时间" width="180">
+          <template #default="{ row }">{{ formatTime(row.loggedAt) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.online ? 'success' : 'info'" size="small">{{ row.online ? '在线' : '离线' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="source" label="来源" width="90" />
+        <el-table-column prop="ip" label="IP" width="130" />
+        <el-table-column prop="message" label="消息" min-width="160" show-overflow-tooltip />
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -200,7 +222,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { channelApi, deviceApi, discoveryApi, isapiApi, onvifApi, recordingApi } from '../api'
-import type { Channel, Device, DiscoveredDevice, IsapiProbeResult, OnvifProbeResult } from '../types'
+import type { Channel, Device, DiscoveredDevice, IsapiProbeResult, OnvifProbeResult, StatusLog } from '../types'
 
 const router = useRouter()
 const protocols = ['rtsp', 'rtmp', 'onvif', 'gb28181', 'ehome', 'rtmp_push']
@@ -252,6 +274,78 @@ const probingIp = ref('')
 const probeResult = ref<OnvifProbeResult | null>(null)
 const isapiVisible = ref(false)
 const isapiResult = ref<IsapiProbeResult | null>(null)
+
+const fileInput = ref<HTMLInputElement>()
+const checkingAll = ref(false)
+const statusVisible = ref(false)
+const statusLogs = ref<StatusLog[]>([])
+
+function formatTime(t: string) {
+  return t && t !== '0001-01-01T00:00:00Z' ? new Date(t).toLocaleString() : '-'
+}
+
+async function exportDevices() {
+  try {
+    const blob = await deviceApi.exportCSV()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'devices.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    ElMessage.error('导出失败')
+  }
+}
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+async function importDevices(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const csv = await file.text()
+  try {
+    const r = await deviceApi.importCSV(csv)
+    ElMessage.success(`导入完成：新增 ${r.created}，跳过 ${r.skipped}`)
+    load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.message || '导入失败')
+  } finally {
+    input.value = ''
+  }
+}
+
+async function checkDevice(row: Device) {
+  try {
+    const r = await deviceApi.check(row.id)
+    ElMessage[r.online ? 'success' : 'warning'](r.online ? '设备在线' : `设备离线：${r.message || ''}`)
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '检测失败')
+  }
+}
+
+async function checkAll() {
+  checkingAll.value = true
+  try {
+    const r = await deviceApi.checkAll()
+    ElMessage.success(`检测完成：在线 ${r.online}/${r.total}`)
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '检测失败')
+  } finally {
+    checkingAll.value = false
+  }
+}
+
+async function openStatusLogs(row: Device) {
+  current.value = row
+  statusLogs.value = await deviceApi.statusLogs(row.id).catch(() => [])
+  statusVisible.value = true
+}
 
 function openDiscovery() {
   discovered.value = []

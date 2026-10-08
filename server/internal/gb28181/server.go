@@ -21,6 +21,7 @@ import (
 	"github.com/tjfoc/gmsm/gmtls"
 	gmx509 "github.com/tjfoc/gmsm/x509"
 
+	"github.com/easyavr/easyavr/internal/access"
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/model"
 	"github.com/easyavr/easyavr/internal/video"
@@ -38,6 +39,10 @@ type Server struct {
 	tlsAddr string
 	sn      atomic.Int64
 	cseq    atomic.Int64
+
+	lifeMu  sync.Mutex
+	stopCh  chan struct{}
+	running bool
 
 	mu       sync.Mutex
 	sessions map[string]*session      // deviceID -> registration
@@ -144,19 +149,37 @@ func NewServer(cfg config.GBConfig, db *gorm.DB, zlm *video.Client) *Server {
 
 // Start binds the UDP socket and begins serving. It is non-blocking.
 func (s *Server) Start() error {
+	s.lifeMu.Lock()
+	if s.running {
+		s.lifeMu.Unlock()
+		return nil
+	}
 	addr, err := net.ResolveUDPAddr("udp", s.cfg.Listen)
 	if err != nil {
+		s.lifeMu.Unlock()
 		return err
 	}
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
+		s.lifeMu.Unlock()
 		return err
 	}
 	s.conn = conn
+	s.stopCh = make(chan struct{})
+	s.running = true
+	stop := s.stopCh
+	s.lifeMu.Unlock()
 	go s.readLoop()
-	go s.offlineChecker()
+	go s.offlineChecker(stop)
 	log.Printf("[gb28181] SIP signaling listening on %s (id=%s realm=%s)", s.cfg.Listen, s.cfg.ID, s.cfg.Realm)
 	return nil
+}
+
+// Running reports whether the SIP signaling listener is active.
+func (s *Server) Running() bool {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	return s.running
 }
 
 // StartTLS binds a GM/T 0024 secure SIP listener for GB35114 devices.
@@ -193,13 +216,35 @@ func (s *Server) StartTLS(cfg TLSConfig) error {
 	return nil
 }
 
+// StopTLS closes only the GB35114 secure SIP listener, leaving the plain UDP
+// signaling running.
+func (s *Server) StopTLS() {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	if s.tlsLn != nil {
+		s.tlsLn.Close()
+		s.tlsLn = nil
+		s.tlsAddr = ""
+	}
+}
+
 func (s *Server) Stop() {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	if s.stopCh != nil {
+		close(s.stopCh)
+		s.stopCh = nil
+	}
 	if s.conn != nil {
 		s.conn.Close()
+		s.conn = nil
 	}
 	if s.tlsLn != nil {
 		s.tlsLn.Close()
+		s.tlsLn = nil
+		s.tlsAddr = ""
 	}
+	s.running = false
 }
 
 // Addr returns the bound UDP address (useful for tests).
@@ -324,6 +369,12 @@ func (s *Server) handleRegister(msg *Message, peer *Peer) {
 		s.send(resp, peer)
 		return
 	}
+	if allowed, reason := access.Check(s.db, "GB28181", deviceID, msg.Get("User-Agent"), peer.IP(), peer.Port()); !allowed {
+		s.send(msg.Response(403, "Forbidden"), peer)
+		log.Printf("[gb28181] device %s registration denied: %s", deviceID, reason)
+		return
+	}
+
 	expires := 3600
 	if v := msg.Get("Expires"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -401,6 +452,11 @@ func (s *Server) handleMessage(msg *Message, peer *Peer) {
 		var a Alarm
 		if xmlUnmarshal(body, &a) == nil {
 			s.handleAlarm(a)
+		}
+	case "MobilePosition":
+		var p MobilePosition
+		if xmlUnmarshal(body, &p) == nil {
+			s.handleMobilePosition(p)
 		}
 	}
 	s.reply(msg, peer, 200, "OK")
@@ -491,6 +547,86 @@ func (s *Server) handleAlarm(a Alarm) {
 	if s.sink != nil {
 		s.sink.OnEvent(ev)
 	}
+}
+
+// handleMobilePosition updates channel/device GPS from a MobilePosition report
+// (手册 3.3.5: 移动设备定位).
+func (s *Server) handleMobilePosition(p MobilePosition) {
+	lon, e1 := strconv.ParseFloat(strings.TrimSpace(p.Longitude), 64)
+	lat, e2 := strconv.ParseFloat(strings.TrimSpace(p.Latitude), 64)
+	if e1 != nil || e2 != nil || (lon == 0 && lat == 0) {
+		return
+	}
+	speed, _ := strconv.ParseFloat(strings.TrimSpace(p.Speed), 64)
+	alt, _ := strconv.ParseFloat(strings.TrimSpace(p.Altitude), 64)
+	heading, _ := strconv.ParseFloat(strings.TrimSpace(p.Direction), 64)
+	ts := time.Now()
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, strings.TrimSpace(p.Time)); err == nil {
+			ts = t
+			break
+		}
+	}
+	updates := map[string]any{
+		"longitude": lon, "latitude": lat, "altitude": alt,
+		"speed": speed, "heading": heading, "gps_time": &ts,
+	}
+	// Channel-level report (DeviceID equals a channel's GB id).
+	var ch model.Channel
+	if err := s.db.Where("gb_channel_id = ?", p.DeviceID).First(&ch).Error; err == nil {
+		s.db.Model(&ch).Updates(updates)
+		s.db.Create(&model.Track{DeviceID: ch.DeviceID, ChannelID: ch.ID, Longitude: lon, Latitude: lat, Altitude: alt, Speed: speed, Heading: heading, Source: "gb28181", TrackTime: ts})
+		return
+	}
+	// Device-level report: update every channel of that GB device.
+	var chs []model.Channel
+	s.db.Where("gb_device_id = ?", p.DeviceID).Find(&chs)
+	if len(chs) > 0 {
+		for _, c := range chs {
+			s.db.Model(&model.Channel{}).Where("id = ?", c.ID).Updates(updates)
+			s.db.Create(&model.Track{DeviceID: c.DeviceID, ChannelID: c.ID, Longitude: lon, Latitude: lat, Altitude: alt, Speed: speed, Heading: heading, Source: "gb28181", TrackTime: ts})
+		}
+		return
+	}
+	// Fallback: the platform Device mirroring the GB device.
+	var dev model.Device
+	if err := s.db.Where("protocol = ? AND name = ?", "gb28181", p.DeviceID).First(&dev).Error; err == nil {
+		s.db.Model(&dev).Updates(updates)
+		s.db.Create(&model.Track{DeviceID: dev.ID, Longitude: lon, Latitude: lat, Altitude: alt, Speed: speed, Heading: heading, Source: "gb28181", TrackTime: ts})
+	}
+}
+
+// QueryMobilePosition asks a registered device to report its current position.
+func (s *Server) QueryMobilePosition(deviceID string) error {
+	peer := s.sessionPeer(deviceID)
+	if peer == nil {
+		return fmt.Errorf("device %s not registered", deviceID)
+	}
+	body, _ := buildQuery("MobilePosition", deviceID, int(s.sn.Add(1)))
+	m := s.newRequest("MESSAGE", fmt.Sprintf("sip:%s@%s", deviceID, s.cfg.Realm), peer)
+	m.Add("Content-Type", "Application/MANSCDP+xml")
+	m.Body = body
+	s.send(m, peer)
+	return nil
+}
+
+// SendPTZ sends a GB28181 DeviceControl PTZ command to a channel's device.
+// deviceID is the GB device that owns the channel; channelID is the GB channel
+// id; ptzHex is the 8-byte command as hex.
+func (s *Server) SendPTZ(deviceID, channelID, ptzHex string) error {
+	peer := s.sessionPeer(deviceID)
+	if peer == nil {
+		return fmt.Errorf("device %s not registered", deviceID)
+	}
+	body, err := buildDeviceControl(channelID, ptzHex, int(s.sn.Add(1)))
+	if err != nil {
+		return err
+	}
+	m := s.newRequest("MESSAGE", fmt.Sprintf("sip:%s@%s", deviceID, s.cfg.Realm), peer)
+	m.Add("Content-Type", "Application/MANSCDP+xml")
+	m.Body = body
+	s.send(m, peer)
+	return nil
 }
 
 // ---- outgoing requests ----
@@ -640,10 +776,15 @@ func (s *Server) tlsPort() int {
 	return p
 }
 
-func (s *Server) offlineChecker() {
+func (s *Server) offlineChecker(stop <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
 		now := time.Now()
 		s.mu.Lock()
 		var offline []string

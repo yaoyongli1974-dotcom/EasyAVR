@@ -73,6 +73,27 @@ type Alarm struct {
 	Latitude         string `xml:"Latitude"`
 }
 
+// MobilePosition is a device position report/response (CmdType=MobilePosition).
+type MobilePosition struct {
+	CmdType   string `xml:"CmdType"`
+	SN        int    `xml:"SN"`
+	DeviceID  string `xml:"DeviceID"`
+	Time      string `xml:"Time"`
+	Longitude string `xml:"Longitude"`
+	Latitude  string `xml:"Latitude"`
+	Speed     string `xml:"Speed"`
+	Direction string `xml:"Direction"`
+	Altitude  string `xml:"Altitude"`
+}
+
+// Control is a MANSCDP DeviceControl body (PTZ / preset commands).
+type Control struct {
+	CmdType  string `xml:"CmdType"`
+	SN       int    `xml:"SN"`
+	DeviceID string `xml:"DeviceID"`
+	PTZCmd   string `xml:"PTZCmd"`
+}
+
 // envelope peeks only CmdType from an arbitrary MANSCDP body.
 type envelope struct {
 	CmdType string `xml:"CmdType"`
@@ -134,4 +155,9 @@ func parseDeviceInfo(body string) (*DeviceInfoResponse, error) {
 		return nil, err
 	}
 	return &d, nil
+}
+
+// buildDeviceControl builds a DeviceControl body carrying a PTZ command.
+func buildDeviceControl(channelID, ptzHex string, sn int) (string, error) {
+	return marshalXML(Control{CmdType: "DeviceControl", SN: sn, DeviceID: channelID, PTZCmd: ptzHex})
 }

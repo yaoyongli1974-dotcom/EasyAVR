@@ -22,11 +22,29 @@ type Config struct {
 	ZLM         ZLMConfig
 	AllowOrigin string
 	SnapshotDir string
+	MonitorSec  int
 	GB          GBConfig
 	Cluster     ClusterConfig
 	GA1400      GA1400Config
 	EHOME       EHOMEConfig
 	GB35114     GB35114Config
+	Map         MapConfig
+	Playback    PlaybackConfig
+}
+
+// PlaybackConfig governs signed playback URLs (手册 3.7.1.1 播放鉴权/播放时效/播放白名单).
+// When Auth is on, play URLs carry an HMAC token that expires after TokenTTLMin.
+// Whitelist restricts which Referer/Origin domains may request a play token.
+type PlaybackConfig struct {
+	Auth        bool
+	TokenTTLMin int
+	Whitelist   []string
+}
+
+// MapConfig configures electronic map helpers such as address search.
+// When AMapKey is empty, the platform falls back to OpenStreetMap Nominatim.
+type MapConfig struct {
+	AMapKey string
 }
 
 // EHOMEConfig configures the Hikvision EHOME/ISUP device access endpoint.
@@ -102,6 +120,7 @@ func Load() *Config {
 		PGVector:    envBool("EASYAVR_PGVECTOR", true),
 		AllowOrigin: env("EASYAVR_ALLOW_ORIGIN", "*"),
 		SnapshotDir: env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
+		MonitorSec:  envInt("EASYAVR_MONITOR_SEC", 0),
 		GB: GBConfig{
 			Enabled:     envBool("EASYAVR_GB_ENABLED", false),
 			Listen:      env("EASYAVR_GB_LISTEN", ":5060"),
@@ -140,6 +159,14 @@ func Load() *Config {
 			CertDir:          env("EASYAVR_GB35114_CERT_DIR", "./data/gb35114-certs"),
 			SIPListen:        env("EASYAVR_GB35114_SIP_LISTEN", ""),
 			SIPRequireClient: envBool("EASYAVR_GB35114_SIP_REQUIRE_CLIENT", true),
+		},
+		Map: MapConfig{
+			AMapKey: env("EASYAVR_AMAP_KEY", ""),
+		},
+		Playback: PlaybackConfig{
+			Auth:        envBool("EASYAVR_PLAY_AUTH", false),
+			TokenTTLMin: envInt("EASYAVR_PLAY_TOKEN_TTL_MIN", 60),
+			Whitelist:   envList("EASYAVR_PLAY_WHITELIST"),
 		},
 		ZLM: ZLMConfig{
 			APIBase:   strings.TrimRight(env("EASYAVR_ZLM_API", "http://127.0.0.1:80"), "/"),
