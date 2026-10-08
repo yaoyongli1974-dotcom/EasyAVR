@@ -2171,10 +2171,10 @@ func TestDiagnostics(t *testing.T) {
 	}
 }
 
-// TestEasyCVRBorrowedFeatures covers the EasyCVR-inspired additions: black-list,
+// TestPlatformAdminFeatures covers the platform governance additions: black-list,
 // CSV bulk import/export, playback auth helpers, traffic/status logging, device
 // health checks and AI task schedule evaluation.
-func TestEasyCVRBorrowedFeatures(t *testing.T) {
+func TestPlatformAdminFeatures(t *testing.T) {
 	srv, _ := newTestServer(t)
 	admin := login(t, srv.URL)
 	B := srv.URL + "/api/v1"
