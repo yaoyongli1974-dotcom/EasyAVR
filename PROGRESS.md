@@ -193,3 +193,9 @@
 - **已完成**：仓库首次提交 `08e409d`，122 个文件、19195 行，工作区干净。提交前已确认 `.gitignore` 排除 `server/data/`、`server/bin/`、`web/dist/`、`web/node_modules/`、`*.db`、`.env`、日志与 ZLM 录像；无密钥/证书/二进制泄漏。
 - **当前状态**：完成
 - **下一步**：EHOME/ISUP（待 SDK/协议）；pgvector HNSW；开放 API 审计筛选/导出。
+
+### 2026-10-08（推送 GitHub）
+- **已完成**：创建并推送公开仓库 https://github.com/yaoyongli1974-dotcom/easyavr （用户 yaoyongli1974-dotcom），本地分支 `main` 跟踪 `origin/main`；`.git/config` 未残留 token。
+- **当前状态**：完成
+- **安全提示**：本次使用的 PAT 已在聊天中明文出现，务必尽快在 GitHub 撤销/轮换；公开仓库中 `EASYAVR_JWT_SECRET`、管理员账号、ZLM secret、Postgres 口令均为**开发默认值**，生产部署必须修改。
+- **下一步**：EHOME/ISUP（待 SDK/协议）；pgvector HNSW；开放 API 审计筛选/导出。
