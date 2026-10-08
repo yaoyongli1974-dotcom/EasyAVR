@@ -1,0 +1,50 @@
+services:
+  # Video Middle Platform streaming core: pull / transcode / distribute.
+  # ZLM regenerates its API secret when it is left at the stock default, so we
+  # pin a non-default secret via deploy/zlm/config.ini; it matches
+  # EASYAVR_ZLM_SECRET's default in the server.
+  zlm:
+    image: zlmediakit/zlmediakit:master
+    container_name: easyavr-zlm
+    restart: unless-stopped
+    volumes:
+      # Pin the API secret to the platform default so the backend can call ZLM.
+      - ./deploy/zlm/config.ini:/opt/media/conf/config.ini
+    ports:
+      - "1935:1935"       # RTMP
+      - "554:554"         # RTSP
+      - "80:80"           # HTTP-FLV / HLS / WebRTC / HTTP API
+      - "10000:10000/udp" # GB28181 / RTP receive (UDP)
+      - "10000:10000/tcp" # GB28181 / RTP receive (TCP)
+      # GB28181 live streams are received on dynamic ports; expose ZLM's
+      # [rtp_proxy] port_range (default 30000-35000) so devices can push RTP.
+      - "30000-30500:30000-30500/udp"
+
+  # Optional PostgreSQL for production-like deployments (the platform defaults
+  # to embedded SQLite). Start it with:
+  #   docker compose --profile postgres up -d postgres
+  # then run the API with:
+  #   EASYAVR_DB_DRIVER=postgres \
+  #   EASYAVR_DB_DSN='postgres://easyavr:easyavr@127.0.0.1:5432/easyavr?sslmode=disable' make run
+  postgres:
+    # postgres:16 + pgvector extension (used for semantic search embeddings).
+    image: pgvector/pgvector:pg16
+    container_name: easyavr-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: easyavr
+      POSTGRES_PASSWORD: easyavr
+      POSTGRES_DB: easyavr
+    volumes:
+      - easyavr-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U easyavr -d easyavr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  easyavr-pgdata:

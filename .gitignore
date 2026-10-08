@@ -1,0 +1,26 @@
+# Go
+server/bin/
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Node / web
+web/node_modules/
+web/dist/
+web/.vite/
+node_modules/
+
+# Runtime / recordings
+deploy/zlm/record/
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
