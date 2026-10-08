@@ -109,6 +109,10 @@ func migrate(db *gorm.DB) error {
 		&model.GB35114Cert{},
 		&model.APIKey{},
 		&model.APIRequestLog{},
+		&model.DeviceGroup{},
+		&model.DeviceGroupDevice{},
+		&model.ChannelGroupChannel{},
+		&model.UserGroup{},
 	)
 }
 

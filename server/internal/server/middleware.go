@@ -211,3 +211,127 @@ func currentClaims(c *gin.Context) *auth.Claims {
 	}
 	return nil
 }
+
+// requireGroupPerm checks if the user has access to a device/channel through
+// group membership. It looks for deviceID/channelID in query/param/body.
+// The perm argument is the permission key required (e.g. "device", "video").
+// If the user is admin or has the perm via role, it passes.
+// Otherwise, it checks UserGroup entries for groups containing the target
+// device/channel; if the user has the perm (or empty = inherit role) for that
+// group, it passes.
+func (a *App) requireGroupPerm(perm string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims := currentClaims(c)
+		if claims == nil {
+			fail(c, http.StatusUnauthorized, "unauthenticated")
+			c.Abort()
+			return
+		}
+		if claims.Role == "admin" {
+			c.Next()
+			return
+		}
+		// Role-level permission check first.
+		var role model.Role
+		if err := a.db.Where("name = ?", claims.Role).First(&role).Error; err == nil && hasPerm(role.Permissions, perm) {
+			c.Next()
+			return
+		}
+
+		// Extract target device/channel ID.
+		var deviceID, channelID uint
+		if v := c.Query("deviceId"); v != "" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				deviceID = uint(id)
+			}
+		} else if v := c.Query("channelId"); v != "" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				channelID = uint(id)
+			}
+		} else if v := c.Param("deviceId"); v != "" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				deviceID = uint(id)
+			}
+		} else if v := c.Param("channelId"); v != "" {
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				channelID = uint(id)
+			}
+		} else if v := c.Param("id"); v != "" {
+			// Generic :id param - try to determine if it's device or channel by checking the route path
+			if id, err := strconv.ParseUint(v, 10, 64); err == nil {
+				path := c.Request.URL.Path
+				if strings.Contains(path, "/devices/") && !strings.Contains(path, "/channels/") {
+					deviceID = uint(id)
+				} else if strings.Contains(path, "/channels/") {
+					channelID = uint(id)
+				}
+			}
+		} else if c.Request.Method != http.MethodGet {
+			var body map[string]any
+			if err := c.ShouldBindJSON(&body); err == nil {
+				if v, ok := body["deviceId"].(float64); ok {
+					deviceID = uint(v)
+				}
+				if v, ok := body["channelId"].(float64); ok {
+					channelID = uint(v)
+				}
+			}
+		}
+
+		if deviceID == 0 && channelID == 0 {
+			// No target specified; allow (caller will 404 if needed).
+			c.Next()
+			return
+		}
+
+		// Build group IDs containing the target device/channel.
+		var groupIDs []uint
+		if deviceID > 0 {
+			a.db.Model(&model.DeviceGroupDevice{}).
+				Where("device_id = ?", deviceID).
+				Pluck("group_id", &groupIDs)
+			// Also include groups via device's direct GroupID.
+			var dg uint
+			a.db.Model(&model.Device{}).Where("id = ?", deviceID).Pluck("group_id", &dg)
+			if dg > 0 {
+				groupIDs = append(groupIDs, dg)
+			}
+		}
+		if channelID > 0 {
+			a.db.Model(&model.ChannelGroupChannel{}).
+				Where("channel_id = ?", channelID).
+				Pluck("group_id", &groupIDs)
+			// Channel -> Device -> Group
+			var did uint
+			a.db.Model(&model.Channel{}).Where("id = ?", channelID).Pluck("device_id", &did)
+			if did > 0 {
+				a.db.Model(&model.DeviceGroupDevice{}).
+					Where("device_id = ?", did).
+					Pluck("group_id", &groupIDs)
+				var dg uint
+				a.db.Model(&model.Device{}).Where("id = ?", did).Pluck("group_id", &dg)
+				if dg > 0 {
+					groupIDs = append(groupIDs, dg)
+				}
+			}
+		}
+		if len(groupIDs) == 0 {
+			// Target not in any group; deny unless role has perm.
+			fail(c, http.StatusForbidden, "权限不足："+perm)
+			c.Abort()
+			return
+		}
+
+		// Check UserGroup for any of these groups.
+		var ugs []model.UserGroup
+		a.db.Where("user_id = ? AND group_id IN ?", claims.UserID, groupIDs).Find(&ugs)
+		for _, ug := range ugs {
+			if ug.Permissions == "" || hasPerm(ug.Permissions, perm) {
+				c.Next()
+				return
+			}
+		}
+		fail(c, http.StatusForbidden, "权限不足："+perm)
+		c.Abort()
+	}
+}

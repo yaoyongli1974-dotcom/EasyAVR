@@ -615,6 +615,215 @@ func TestUserAndRoleManagement(t *testing.T) {
 	}
 }
 
+// TestGroupManagement covers device group CRUD, device/channel binding,
+// user-group permissions, and group-based authorization.
+func TestGroupManagement(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Create a device and channel for binding tests.
+	var devResp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-g1", "protocol": "rtsp", "manufacturer": "hikvision", "ip": "10.0.0.20",
+	}, &devResp)
+	var dev struct {
+		ID       uint `json:"id"`
+		Channels []struct {
+			ID uint `json:"id"`
+		} `json:"channels"`
+	}
+	json.Unmarshal(devResp.Data, &dev)
+	channelID := dev.Channels[0].ID
+
+	// Create a user (operator) for group permission tests.
+	var opResp apiResp
+	doJSON(t, http.MethodPost, B+"/users", admin, map[string]any{
+		"username": "operator1", "nickname": "Op1", "password": "secret1", "role": "operator",
+	}, &opResp)
+	var opUser struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(opResp.Data, &opUser)
+
+	// Create viewer user for group-based auth tests
+	var viewerResp apiResp
+	doJSON(t, http.MethodPost, B+"/users", admin, map[string]any{
+		"username": "viewer1", "nickname": "Viewer1", "password": "secret1", "role": "viewer",
+	}, &viewerResp)
+	var viewerUser struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(viewerResp.Data, &viewerUser)
+
+	// 1. Group CRUD
+	var gr apiResp
+	doJSON(t, http.MethodPost, B+"/groups", admin,
+		map[string]any{"name": "Building A", "description": "Main building", "parentId": 0, "sort": 1}, &gr)
+	var g1 struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(gr.Data, &g1)
+	if g1.ID == 0 {
+		t.Fatalf("create group failed: %+v", gr)
+	}
+
+	// Sub-group
+	doJSON(t, http.MethodPost, B+"/groups", admin,
+		map[string]any{"name": "Floor 1", "description": "First floor", "parentId": g1.ID, "sort": 1}, &gr)
+	var g2 struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(gr.Data, &g2)
+
+	// List groups (tree)
+	var groupsResp apiResp
+	doJSON(t, http.MethodGet, B+"/groups", admin, nil, &groupsResp)
+	var groupList []struct {
+		ID       uint `json:"id"`
+		Name     string `json:"name"`
+		ParentID uint `json:"parentId"`
+		Path     string `json:"path"`
+	}
+	json.Unmarshal(groupsResp.Data, &groupList)
+	if len(groupList) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(groupList))
+	}
+	if groupList[0].Path != "/1/" || !strings.HasPrefix(groupList[1].Path, groupList[0].Path) {
+		t.Fatalf("path incorrect: %+v", groupList)
+	}
+
+	// 2. Bind device to group
+	doJSON(t, http.MethodPost, B+"/groups/devices/bind", admin,
+		map[string]any{"groupId": g1.ID, "deviceIds": []uint{dev.ID}}, &gr)
+	if gr.Code != 0 {
+		t.Fatalf("bind device failed: %+v", gr)
+	}
+
+	// List group devices
+	var devsResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/groups/%d/devices", B, g1.ID), admin, nil, &devsResp)
+	var groupDevs []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(devsResp.Data, &groupDevs)
+	if len(groupDevs) != 1 || groupDevs[0].ID != dev.ID {
+		t.Fatalf("group devices mismatch: %+v", groupDevs)
+	}
+
+	// Bind channel to group
+	doJSON(t, http.MethodPost, B+"/groups/channels/bind", admin,
+		map[string]any{"groupId": g2.ID, "channelIds": []uint{channelID}}, &gr)
+	if gr.Code != 0 {
+		t.Fatalf("bind channel failed: %+v", gr)
+	}
+
+	// 3. User-Group permissions
+	doJSON(t, http.MethodPost, B+"/groups/user-groups", admin,
+		map[string]any{"userId": opUser.ID, "groupId": g1.ID, "permissions": "device,video"}, &gr)
+	if gr.Code != 0 {
+		t.Fatalf("assign user group failed: %+v", gr)
+	}
+
+	// 4. Group-based authorization: viewer without group perm cannot access device
+	var r apiResp
+	// Viewer without group perm cannot access specific device (viewer role lacks "device")
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d", B, dev.ID), loginAs(t, srv.URL, "viewer1", "secret1"), nil, &r); code != http.StatusForbidden {
+		t.Fatalf("viewer without group perm should not access device, got %d", code)
+	}
+
+	// Assign viewer to group with device permission
+	doJSON(t, http.MethodPost, B+"/groups/user-groups", admin,
+		map[string]any{"userId": viewerUser.ID, "groupId": g1.ID, "permissions": "device"}, &gr)
+	if gr.Code != 0 {
+		t.Fatalf("assign viewer group failed: %+v", gr)
+	}
+
+	// Viewer with group perm can access device in that group
+	viewerToken := loginAs(t, srv.URL, "viewer1", "secret1")
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d", B, dev.ID), viewerToken, nil, &r); code != http.StatusOK {
+		t.Fatalf("viewer with group perm should access device, got %d", code)
+	}
+
+	// Create restricted group and device for testing group isolation
+	doJSON(t, http.MethodPost, B+"/groups", admin,
+		map[string]any{"name": "Restricted", "parentId": 0}, &gr)
+	var g3 struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(gr.Data, &g3)
+	var dev2Resp apiResp
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-g2", "protocol": "rtsp", "ip": "10.0.0.30",
+	}, &dev2Resp)
+	var dev2 struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(dev2Resp.Data, &dev2)
+	doJSON(t, http.MethodPost, B+"/groups/devices/bind", admin,
+		map[string]any{"groupId": g3.ID, "deviceIds": []uint{dev2.ID}}, &gr)
+
+	// Viewer should not access device in unassigned group
+	if code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d", B, dev2.ID), viewerToken, nil, &r); code != http.StatusForbidden {
+		t.Fatalf("viewer should not access device in unassigned group, got %d", code)
+	}
+
+	// 5. Unbind device/channel
+	doJSON(t, http.MethodPost, B+"/groups/devices/unbind", admin,
+		map[string]any{"groupId": g1.ID, "deviceIds": []uint{dev.ID}}, &gr)
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/groups/%d/devices", B, g1.ID), admin, nil, &devsResp)
+	json.Unmarshal(devsResp.Data, &groupDevs)
+	if len(groupDevs) != 0 {
+		t.Fatalf("expected 0 devices after unbind, got %d", len(groupDevs))
+	}
+
+	// 6. Delete user-group
+	var ugsResp apiResp
+	doJSON(t, http.MethodGet, B+"/groups/user-groups", admin, nil, &ugsResp)
+	var ugs []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(ugsResp.Data, &ugs)
+	for _, ug := range ugs {
+		if ug.ID > 0 {
+			doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/user-groups/%d", B, ug.ID), admin, nil, &r)
+		}
+	}
+
+	// 7. Delete groups (children first)
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, g2.ID), admin, nil, &r)
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, g1.ID), admin, nil, &r)
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, g3.ID), admin, nil, &r)
+
+	// 8. Verify group with children cannot be deleted
+	doJSON(t, http.MethodPost, B+"/groups", admin,
+		map[string]any{"name": "Parent", "parentId": 0}, &gr)
+	var gp struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(gr.Data, &gp)
+	doJSON(t, http.MethodPost, B+"/groups", admin,
+		map[string]any{"name": "Child", "parentId": gp.ID}, &gr)
+	if code := doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, gp.ID), admin, nil, &r); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 deleting parent with children, got %d", code)
+	}
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, gp.ID), admin, nil, &r) // fails, child exists
+	// Clean up child first
+	var groupList2 []struct {
+		ID       uint `json:"id"`
+		Name     string `json:"name"`
+		ParentID uint `json:"parentId"`
+	}
+	doJSON(t, http.MethodGet, B+"/groups", admin, nil, &groupsResp)
+	json.Unmarshal(groupsResp.Data, &groupList2)
+	for _, gl := range groupList2 {
+		if gl.ParentID == gp.ID {
+			doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, gl.ID), admin, nil, &r)
+		}
+	}
+	doJSON(t, http.MethodDelete, fmt.Sprintf("%s/groups/%d", B, gp.ID), admin, nil, &r) // now ok
+}
+
 func TestAuthRequired(t *testing.T) {
 	srv, _ := newTestServer(t)
 	var r apiResp

@@ -332,3 +332,36 @@ type GA1400Subscription struct {
 	LastRenewAt time.Time `json:"lastRenewAt"` // last successful renew
 	RenewCount  int       `json:"renewCount"`
 }
+
+// DeviceGroup organizes devices/channels in a hierarchy (multi-level).
+// Path stores ancestry like "/1/3/7/" for fast subtree queries.
+type DeviceGroup struct {
+	Base
+	Name        string `gorm:"size:64;index" json:"name"`
+	Description string `gorm:"size:255" json:"description"`
+	ParentID    uint   `gorm:"index" json:"parentId"`
+	Path        string `gorm:"size:255;index" json:"path"` // e.g. "/1/3/7/"
+	Sort        int    `gorm:"default:0" json:"sort"`
+}
+
+// DeviceGroupDevice binds a device to a group (many-to-many).
+type DeviceGroupDevice struct {
+	DeviceID uint `gorm:"primaryKey;index" json:"deviceId"`
+	GroupID  uint `gorm:"primaryKey;index" json:"groupId"`
+}
+
+// ChannelGroupChannel binds a channel to a group (many-to-many).
+type ChannelGroupChannel struct {
+	ChannelID uint `gorm:"primaryKey;index" json:"channelId"`
+	GroupID   uint `gorm:"primaryKey;index" json:"groupId"`
+}
+
+// UserGroup binds a user to a group with optional per-group permissions.
+// Permissions is a comma-separated list (same keys as Role.Permissions).
+// Empty means inherit from role.
+type UserGroup struct {
+	Base
+	UserID      uint   `gorm:"uniqueIndex:uq_user_group" json:"userId"`
+	GroupID     uint   `gorm:"uniqueIndex:uq_user_group" json:"groupId"`
+	Permissions string `gorm:"size:512" json:"permissions"`
+}

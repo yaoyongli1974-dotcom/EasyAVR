@@ -8,8 +8,11 @@ import type {
   APIRequestLog,
   ApiResult,
   Channel,
+  ChannelGroupChannel,
   ClusterNode,
   Device,
+  DeviceGroup,
+  DeviceGroupDevice,
   DiscoveredDevice,
   GA1400Cascade,
   GA1400Subscription,
@@ -28,6 +31,7 @@ import type {
   SearchHit,
   Snapshot,
   User,
+  UserGroup,
   VideoResource,
 } from '../types'
 
@@ -250,4 +254,32 @@ export const apiKeyApi = {
   logs: (id?: number, limit = 100) =>
     unwrap<APIRequestLog[]>(client.get(id ? `/apikeys/${id}/logs` : '/apikeys/logs', { params: { limit } })),
   openapi: () => client.get('/openapi.json').then((r) => r.data),
+}
+
+export const groupApi = {
+  list: () => unwrap<DeviceGroup[]>(client.get('/groups')),
+  create: (body: { name: string; description?: string; parentId?: number; sort?: number }) =>
+    unwrap<DeviceGroup>(client.post('/groups', body)),
+  update: (id: number, body: { name?: string; description?: string; parentId?: number; sort?: number }) =>
+    unwrap<DeviceGroup>(client.put(`/groups/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/groups/${id}`)),
+
+  bindDevices: (body: { groupId: number; deviceIds: number[] }) =>
+    unwrap<{ count: number }>(client.post('/groups/devices/bind', body)),
+  unbindDevices: (body: { groupId: number; deviceIds: number[] }) =>
+    unwrap<{ groupId: number }>(client.post('/groups/devices/unbind', body)),
+  groupDevices: (id: number) => unwrap<Device[]>(client.get(`/groups/${id}/devices`)),
+
+  bindChannels: (body: { groupId: number; channelIds: number[] }) =>
+    unwrap<{ count: number }>(client.post('/groups/channels/bind', body)),
+  unbindChannels: (body: { groupId: number; channelIds: number[] }) =>
+    unwrap<{ groupId: number }>(client.post('/groups/channels/unbind', body)),
+  groupChannels: (id: number) => unwrap<Channel[]>(client.get(`/groups/${id}/channels`)),
+
+  userGroups: () => unwrap<UserGroup[]>(client.get('/groups/user-groups')),
+  assignUserGroup: (body: { userId: number; groupId: number; permissions?: string }) =>
+    unwrap<UserGroup>(client.post('/groups/user-groups', body)),
+  updateUserGroup: (id: number, body: { permissions?: string }) =>
+    unwrap<UserGroup>(client.put(`/groups/user-groups/${id}`, body)),
+  removeUserGroup: (id: number) => unwrap<{ id: number }>(client.delete(`/groups/user-groups/${id}`)),
 }

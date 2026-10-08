@@ -28,6 +28,7 @@ const router = createRouter({
         { path: 'cluster', name: 'cluster', component: () => import('../views/Cluster.vue') },
         { path: 'apikeys', name: 'apikeys', component: () => import('../views/ApiKeys.vue') },
         { path: 'users', name: 'users', component: () => import('../views/Users.vue') },
+        { path: 'groups', name: 'groups', component: () => import('../views/Groups.vue') },
       ],
     },
   ],

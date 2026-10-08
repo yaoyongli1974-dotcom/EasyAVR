@@ -36,6 +36,7 @@
           <el-menu-item index="/cluster">集群</el-menu-item>
           <el-menu-item index="/apikeys">开放 API</el-menu-item>
           <el-menu-item index="/users">用户与角色</el-menu-item>
+          <el-menu-item index="/groups">设备分组</el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>

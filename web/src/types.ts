@@ -343,3 +343,31 @@ export interface GB35114Cert {
   notAfter: string
   revokedAt?: string
 }
+
+export interface DeviceGroup {
+  id: number
+  name: string
+  description: string
+  parentId: number
+  path: string
+  sort: number
+}
+
+export interface DeviceGroupDevice {
+  deviceId: number
+  groupId: number
+}
+
+export interface ChannelGroupChannel {
+  channelId: number
+  groupId: number
+}
+
+export interface UserGroup {
+  id: number
+  userId: number
+  groupId: number
+  permissions: string
+  user?: User
+  group?: DeviceGroup
+}
