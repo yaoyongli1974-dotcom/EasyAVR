@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +51,170 @@ func (a *App) authRequired() gin.HandlerFunc {
 		c.Set("claims", claims)
 		c.Next()
 	}
+}
+
+// auditLog records an audit log entry for each authenticated request.
+func (a *App) auditLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		// Skip health check and static files
+		path := c.Request.URL.Path
+		if path == "/api/v1/healthz" || strings.HasPrefix(path, "/snapshots") || strings.HasPrefix(path, "/assets") || path == "/favicon.ico" {
+			return
+		}
+		claims := currentClaims(c)
+		var userID uint
+		var username string
+		if claims != nil {
+			userID = claims.UserID
+			username = claims.Username
+		}
+		status := c.Writer.Status()
+		result := "success"
+		var errorMsg string
+		if status >= 400 {
+			result = "failed"
+			// Try to get error message from response
+			if len(c.Errors) > 0 {
+				errorMsg = c.Errors.String()
+			}
+		}
+		// Determine action from method and path
+		action := inferAction(c.Request.Method, path)
+		resource := inferResource(path)
+		resourceID := inferResourceID(c)
+		// Request body (skip for GET, limit size)
+		var reqBody string
+		var body []byte
+		if c.Request.Method != http.MethodGet && c.Request.Body != nil {
+			var err error
+			body, err = io.ReadAll(c.Request.Body)
+			if err == nil && len(body) > 0 {
+				if len(body) > 2048 {
+					reqBody = string(body[:2048]) + "..."
+				} else {
+					reqBody = string(body)
+				}
+			}
+			// Restore body for downstream handlers
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+		}
+
+		a.db.Create(&model.AuditLog{
+			UserID:      userID,
+			Username:    username,
+			IP:          c.ClientIP(),
+			Method:      c.Request.Method,
+			Path:        path,
+			Action:      action,
+			Resource:    resource,
+			ResourceID:  resourceID,
+			Result:      result,
+			ErrorMsg:    errorMsg,
+			RequestBody: reqBody,
+			LatencyMs:   time.Since(start).Milliseconds(),
+		})
+	}
+}
+
+// inferAction infers the action type from HTTP method and path.
+func inferAction(method, path string) string {
+	switch method {
+	case http.MethodPost:
+		if strings.Contains(path, "/login") {
+			return "login"
+		}
+		if strings.Contains(path, "/logout") {
+			return "logout"
+		}
+		if strings.Contains(path, "/start") || strings.Contains(path, "/run") {
+			return "start"
+		}
+		if strings.Contains(path, "/stop") {
+			return "stop"
+		}
+		if strings.Contains(path, "/sync") {
+			return "sync"
+		}
+		if strings.Contains(path, "/import") {
+			return "import"
+		}
+		if strings.Contains(path, "/bind") {
+			return "bind"
+		}
+		if strings.Contains(path, "/unbind") {
+			return "unbind"
+		}
+		if strings.Contains(path, "/assign") {
+			return "assign"
+		}
+		if strings.Contains(path, "/enroll") || strings.Contains(path, "/sign-csr") || strings.Contains(path, "/generate") {
+			return "issue"
+		}
+		if strings.Contains(path, "/revoke") {
+			return "revoke"
+		}
+		if strings.Contains(path, "/test") {
+			return "test"
+		}
+		if strings.Contains(path, "/gps") {
+			return "update_gps"
+		}
+		if strings.Contains(path, "/password") {
+			return "change_password"
+		}
+		if strings.HasSuffix(path, "/gps") {
+			return "update_gps"
+		}
+		return "create"
+	case http.MethodPut, http.MethodPatch:
+		return "update"
+	case http.MethodDelete:
+		return "delete"
+	case http.MethodGet:
+		if strings.Contains(path, "/export") || strings.Contains(path, "/download") {
+			return "export"
+		}
+		return "read"
+	default:
+		return method
+	}
+}
+
+// inferResource extracts resource name from path.
+func inferResource(path string) string {
+	// /api/v1/devices -> devices
+	// /api/v1/channels/1/start -> channels
+	// /api/v1/ai/tasks -> ai_tasks
+	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/"), "/")
+	if len(parts) >= 1 && parts[0] != "" {
+		r := parts[0]
+		// Normalize plural names
+		switch r {
+		case "apikeys":
+			return "api_keys"
+		case "notify":
+			return "notification"
+		case "gb35114":
+			return "gb35114"
+		case "ga1400":
+			return "ga1400"
+		}
+		return r
+	}
+	return ""
+}
+
+// inferResourceID extracts resource ID from path params.
+func inferResourceID(c *gin.Context) string {
+	// Try common param names
+	for _, name := range []string{"id", "deviceId", "channelId", "groupId", "keyId", "cascadeId", "providerId", "taskId"} {
+		if v := c.Param(name); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // apiKeyRequired authenticates a third-party/APP request with an API key,

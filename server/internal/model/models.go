@@ -397,3 +397,23 @@ type UserGroup struct {
 	GroupID     uint   `gorm:"uniqueIndex:uq_user_group" json:"groupId"`
 	Permissions string `gorm:"size:512" json:"permissions"`
 }
+
+// AuditLog records an operation for compliance and troubleshooting (手册 3.7.5 运维审计).
+// Action: create, update, delete, login, logout, export, import, config_change, etc.
+// Resource: devices, channels, users, roles, groups, ai_tasks, etc.
+// Result: success, failed.
+type AuditLog struct {
+	Base
+	UserID      uint   `gorm:"index" json:"userId"`
+	Username    string `gorm:"size:64;index" json:"username"`
+	IP          string `gorm:"size:64" json:"ip"`
+	Method      string `gorm:"size:8;index" json:"method"`      // GET, POST, PUT, DELETE
+	Path        string `gorm:"size:255;index" json:"path"`      // API path
+	Action      string `gorm:"size:32;index" json:"action"`     // create, update, delete, login...
+	Resource    string `gorm:"size:64;index" json:"resource"`   // devices, users, channels...
+	ResourceID  string `gorm:"size:64;index" json:"resourceId"` // target ID
+	Result      string `gorm:"size:16;index" json:"result"`     // success, failed
+	ErrorMsg    string `gorm:"size:512" json:"errorMsg"`        // error detail if failed
+	RequestBody string `gorm:"type:text" json:"requestBody"`    // request payload (JSON)
+	LatencyMs   int64  `json:"latencyMs"`                       // request latency
+}

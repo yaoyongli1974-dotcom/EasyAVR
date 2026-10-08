@@ -114,6 +114,7 @@ func migrate(db *gorm.DB) error {
 		&model.ChannelGroupChannel{},
 		&model.UserGroup{},
 		&model.Track{},
+		&model.AuditLog{},
 	)
 }
 

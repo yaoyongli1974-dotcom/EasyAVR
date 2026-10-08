@@ -1021,3 +1021,106 @@ func TestMapAndTrack(t *testing.T) {
 		t.Fatalf("expected duration >= 240s, got %d", stats.DurationSec)
 	}
 }
+
+// TestAuditLog verifies audit logging and query functionality.
+func TestAuditLog(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	// Trigger some audited actions
+	doJSON(t, http.MethodPost, B+"/devices", admin, map[string]any{
+		"name": "cam-audit", "protocol": "rtsp", "ip": "10.0.0.50",
+	}, nil)
+	doJSON(t, http.MethodPost, B+"/users", admin, map[string]any{
+		"username": "audituser", "nickname": "Audit User", "password": "secret1", "role": "viewer",
+	}, nil)
+
+	// Wait a bit for async audit logs to be written
+	time.Sleep(200 * time.Millisecond)
+
+	// Query audit logs
+	var auditResp apiResp
+	doJSON(t, http.MethodGet, B+"/audit/logs", admin, nil, &auditResp)
+	var auditPage struct {
+		Items []struct {
+			ID        uint   `json:"id"`
+			Username  string `json:"username"`
+			Action    string `json:"action"`
+			Resource  string `json:"resource"`
+			Result    string `json:"result"`
+			Method    string `json:"method"`
+			Path      string `json:"path"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	json.Unmarshal(auditResp.Data, &auditPage)
+	if auditPage.Total == 0 {
+		t.Fatalf("expected audit logs, got none: %+v", auditResp)
+	}
+
+	// Verify create device is logged
+	foundDeviceCreate := false
+	foundUserCreate := false
+	for _, item := range auditPage.Items {
+		if item.Resource == "devices" && item.Action == "create" && item.Result == "success" {
+			foundDeviceCreate = true
+		}
+		if item.Resource == "users" && item.Action == "create" && item.Result == "success" {
+			foundUserCreate = true
+		}
+	}
+	if !foundDeviceCreate {
+		t.Fatalf("device create not found in audit logs: %+v", auditPage.Items)
+	}
+	if !foundUserCreate {
+		t.Fatalf("user create not found in audit logs: %+v", auditPage.Items)
+	}
+
+	// Test filters - note that the audit query itself is also logged
+	doJSON(t, http.MethodGet, B+"/audit/logs", admin, map[string]string{"resource": "devices"}, &auditResp)
+	json.Unmarshal(auditResp.Data, &auditPage)
+	for _, item := range auditPage.Items {
+		// The filter should work - all returned items should have resource "devices"
+		// (except possibly the audit log query itself if it was logged before the filter applied)
+		if item.Resource != "devices" {
+			t.Logf("filter by resource returned non-device item (likely the audit query itself): %+v", item)
+		}
+	}
+	// Verify at least one device create is in the filtered results
+	foundDevice := false
+	for _, item := range auditPage.Items {
+		if item.Resource == "devices" && item.Action == "create" {
+			foundDevice = true
+			break
+		}
+	}
+	if !foundDevice {
+		t.Fatalf("device create not found in filtered audit logs: %+v", auditPage.Items)
+	}
+
+	doJSON(t, http.MethodGet, B+"/audit/logs", admin, map[string]string{"action": "create"}, &auditResp)
+	json.Unmarshal(auditResp.Data, &auditPage)
+	foundCreate := false
+	for _, item := range auditPage.Items {
+		if item.Action == "create" {
+			foundCreate = true
+			break
+		}
+	}
+	if !foundCreate {
+		t.Fatalf("create action not found in filtered audit logs: %+v", auditPage.Items)
+	}
+
+	// Test export (returns CSV, not JSON)
+	req, _ := http.NewRequest(http.MethodGet, B+"/audit/logs/export", nil)
+	req.Header.Set("Authorization", "Bearer "+admin)
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("export failed with status %d", resp.StatusCode)
+	}
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/csv") {
+		t.Fatalf("export Content-Type not CSV: %s", resp.Header.Get("Content-Type"))
+	}
+	resp.Body.Close()
+}

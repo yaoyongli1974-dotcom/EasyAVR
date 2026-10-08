@@ -7,6 +7,8 @@ import type {
   APIKeyStats,
   APIRequestLog,
   ApiResult,
+  AuditLog,
+  AuditLogPage,
   Channel,
   ChannelGroupChannel,
   ClusterNode,
@@ -299,4 +301,12 @@ export const mapApi = {
     unwrap<TrackPoint[]>(client.get('/map/tracks', { params })),
   trackStats: (params?: { deviceId?: number; channelId?: number; start?: string; end?: string }) =>
     unwrap<TrackStats>(client.get('/map/tracks/stats', { params })),
+}
+
+export const auditApi = {
+  list: (params?: Record<string, unknown>) =>
+    unwrap<AuditLogPage>(client.get('/audit/logs', { params })),
+  get: (id: number) => unwrap<AuditLog>(client.get(`/audit/logs/${id}`)),
+  export: (params?: Record<string, unknown>) =>
+    client.get('/audit/logs/export', { params, responseType: 'blob' }).then((r) => r.data),
 }

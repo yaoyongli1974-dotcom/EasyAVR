@@ -38,6 +38,7 @@
           <el-menu-item index="/users">用户与角色</el-menu-item>
           <el-menu-item index="/groups">设备分组</el-menu-item>
           <el-menu-item index="/map">电子地图</el-menu-item>
+          <el-menu-item index="/audit">运维审计</el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>

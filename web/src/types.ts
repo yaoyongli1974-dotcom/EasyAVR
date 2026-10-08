@@ -415,3 +415,27 @@ export interface TrackStats {
   maxAltitude: number
   durationSec: number
 }
+
+export interface AuditLog {
+  id: number
+  userId: number
+  username: string
+  ip: string
+  method: string
+  path: string
+  action: string
+  resource: string
+  resourceId: string
+  result: string
+  errorMsg: string
+  requestBody: string
+  latencyMs: number
+  createdAt: string
+}
+
+export interface AuditLogPage {
+  items: AuditLog[]
+  total: number
+  page: number
+  pageSize: number
+}

@@ -30,6 +30,8 @@ func (a *App) buildRouter() *gin.Engine {
 	// Everything below requires a valid JWT.
 	authed := api.Group("")
 	authed.Use(a.authRequired())
+	// Audit log for all authenticated requests.
+	authed.Use(a.auditLog())
 
 	authed.GET("/auth/profile", a.profile)
 	authed.POST("/auth/password", a.changePassword)
@@ -221,6 +223,13 @@ func (a *App) buildRouter() *gin.Engine {
 	events.GET("", a.listEvents)
 	events.GET("/stats", a.eventStats)
 	events.POST("/ingest", a.ingestEvent)
+
+	// Audit log (admin only) - 手册 3.7.5 运维审计
+	auditGroup := authed.Group("/audit")
+	auditGroup.Use(a.adminRequired())
+	auditGroup.GET("/logs", a.listAuditLogs)
+	auditGroup.GET("/logs/:id", a.getAuditLog)
+	auditGroup.GET("/logs/export", a.exportAuditLogs)
 
 	authed.GET("/system/info", a.systemInfo)
 
