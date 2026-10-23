@@ -46,6 +46,30 @@ Verification order when changing backend: `make test` then `make vet`. Frontend:
 - The backend serves `web/dist` when present (`EASYAVR_WEB_DIST`, default `../web/dist` relative to `server/`); `NoRoute` falls back to `index.html` for the SPA, except `/api/*`.
 - UI copy and some comments are in Chinese; keep that consistent.
 
+## 查询数据库（只读）
+
+本机已装 `sqlite3` 和 `psql`，直接查，不起 MCP server。
+
+| 目标 | 命令 |
+|---|---|
+| 本地开发库（默认、有数据） | `sqlite3 -readonly server/data/easyavr.db` |
+| 容器 PG（pgvector，目前是空库） | `psql 'postgres://easyavr_ro:easyavr_ro@127.0.0.1:5432/easyavr?sslmode=disable'` |
+
+`easyavr-postgres` 的 5432 已发布到宿主，不用 `docker exec`。默认 `EASYAVR_DB_DRIVER=sqlite`、`EASYAVR_DB=./data/easyavr.db`（相对 `server/`），所以平时有数据的是 SQLite，PG 只是部署目标——查之前先确认你连的是哪个，别对着空库下结论。
+
+**硬规则：**
+
+- 一律用上面的 `easyavr_ro` DSN 连 PG。该角色只有 `CONNECT`/`USAGE`/`SELECT`，`DELETE`、`CREATE TABLE` 都会被服务端拒绝（已实测）；默认权限已覆盖 AutoMigrate 后续新建的表。`deploy/postgres/init/01-readonly-role.sql` 是它的定义，新数据卷启动时自动执行。
+- SQLite 一律 `-readonly`（进程级强制，漏了就真的能写）。
+- 不要用 `easyavr`（可写）账号查数据，除非用户明确要求改库。
+- 查表结构优先读 `server/internal/model/models.go`——GORM `AutoMigrate` 的唯一真相源，比 `\d`/`.schema` 快，也不会和实际 schema 漂移。
+
+```bash
+sqlite3 -readonly server/data/easyavr.db ".tables"
+sqlite3 -readonly server/data/easyavr.db "select count(*) from devices;"
+psql 'postgres://easyavr_ro:easyavr_ro@127.0.0.1:5432/easyavr?sslmode=disable' -c '\dt'
+```
+
 ## Conventions
 
 - API responses are always `{code, message, data}`; `code:0` means success (`ok`/`fail` helpers in `internal/server/app.go`).
