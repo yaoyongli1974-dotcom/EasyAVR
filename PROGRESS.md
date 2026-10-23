@@ -424,3 +424,18 @@
   - 测试：新增 `TestPlatformConfigGB35114Listen`（无端口开启→warning；设置端口→持久化并在配置中回显）。
 - **验证通过**：`gofmt -l`、`go vet ./...`、`go test ./...`、`web npm run build` 均通过。
 - **当前状态**：完成，已提交并推送。
+
+### 2026-10-24（收尾：Go 工具链 + 误提交凭据清理 + 未提交改动入库）
+- **背景**：接手时工作区有 4 处未提交改动（只读查库文档 / compose 挂载 PG init / `deploy/postgres/` / 一个 `.bak` 备份），且本机直接 `make test`、`make run` 失败。
+- **已完成**：
+  - **工具链**：本机到 `proxy.golang.org` 不通（IPv6 dial timeout），`go.mod` 声明的 `go 1.26.0` 触发 toolchain 自动下载即失败。`go env -w GOPROXY=https://goproxy.cn,direct` 固化后，toolchain 与模块都经 goproxy.cn 拉取成功（`go.mod` 未改动，`GOTOOLCHAIN` 仍为 auto）。
+  - **提交 71e4609**：只读 PG 角色 `easyavr_ro`（`deploy/postgres/init/01-readonly-role.sql`）+ compose 挂载 init 目录、5432 仅绑 `127.0.0.1` + AGENTS.md 新增「查询数据库（只读）」章节；删除多余的 `docker-compose.yml.bak-portbind`。
+  - **提交 4faf78a**：取消跟踪 6 个被误提交的自签证书（`server/internal/server/platform*.crt|key`），`.gitignore` 增加 `platform*.crt/key`、`platform_tls_*` 规则（运行时证书只落在 `EASYAVR_GB35114_CERT_DIR`）。
+  - **提交 c0ec721**：根因修复——`newTestServer` 未设置 `GB35114.CertDir`，证书被签发到包目录才被误提交；改为 `t.TempDir()/certs`，测试不再污染源码树。
+- **验证通过**：`make test`（22 个包全过）、`make vet`、`gofmt -l` 无输出、`cd web && npm run build`（vue-tsc + vite，5.5s）；空库冷启动冒烟：自动迁移 + 种子 → `easyavr/easyavr` 登录成功，`/system/info /devices /channels /ai/providers /events/stats /recordings /gb/config /config/platform` 全部 200；`easyavr-postgres`（healthy）与 `easyavr-zlm` 容器正常，`easyavr_ro` 只读 DSN 实测可查表。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：
+  1. 视频全链路真机验证：开发库当前 0 设备 0 通道，设备接入 / 实时播放 / 录像 / 快照 未实机跑过。
+  2. 待选型深化：转码 / OSD 水印（需定 ZLM 策略）、云存储归档（MinIO/S3/OSS 选型）。
+  3. 可选功能：ROI 图像框选工作台、告警预案（报警类型→方式映射）、国标级联自动填充、录像超阈值自动删除（需 ZLM 配合删文件）。
+  4. 前端包体偏大（`index` 1.13 MB、`VideoPlayer` 876 KB），可按需 `manualChunks` 拆分。
