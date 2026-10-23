@@ -37,6 +37,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *config.Config) {
 	}
 	cfg.ZLM.APIBase = "http://127.0.0.1:1" // deliberately unreachable
 	cfg.ZLM.Secret = "test"
+	cfg.GB35114.CertDir = filepath.Join(t.TempDir(), "certs")
 	db, err := store.Open(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
