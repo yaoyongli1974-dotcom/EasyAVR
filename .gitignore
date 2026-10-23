@@ -15,6 +15,12 @@ node_modules/
 deploy/zlm/record/
 *.log
 
+# GB35114 self-signed certs (generated at runtime under CertDir)
+platform.crt
+platform.key
+platform_tls_*.crt
+platform_tls_*.key
+
 # Editor / OS
 .DS_Store
 .idea/
