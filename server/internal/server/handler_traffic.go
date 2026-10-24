@@ -21,10 +21,7 @@ func (a *App) syncTraffic() (int, int) {
 	if err != nil {
 		return 0, -1
 	}
-	byStream := make(map[string]video.MediaStream, len(streams))
-	for _, s := range streams {
-		byStream[s.Stream] = s
-	}
+	byStream := video.SummarizeStreams(streams)
 	var channels []model.Channel
 	a.db.Find(&channels)
 	updated, transitions := 0, 0
@@ -38,8 +35,8 @@ func (a *App) syncTraffic() (int, int) {
 		tr.Online = live
 		tr.LastSample = now
 		if live {
-			if s.Bytes > 0 {
-				tr.Bytes = s.Bytes
+			if s.TotalBytes > 0 {
+				tr.Bytes = s.TotalBytes
 			}
 		}
 		if tr.ID == 0 {
@@ -84,10 +81,10 @@ func (a *App) getChannelTraffic(c *gin.Context) {
 	a.db.Where("channel_id = ?", id).First(&tr)
 	media := gin.H{}
 	if streams, err := a.zlm.MediaList(); err == nil {
-		for _, s := range streams {
-			if s.Stream == ch.StreamKey {
-				media = gin.H{"readerCount": s.ReaderCount, "bytes": s.Bytes, "aliveSecond": s.AliveSecond, "schema": s.Schema}
-				break
+		if s, ok := video.SummarizeStreams(streams)[ch.StreamKey]; ok {
+			media = gin.H{
+				"readerCount": s.ReaderCount, "bytes": s.TotalBytes,
+				"bytesPerSec": s.BytesSpeed, "aliveSecond": s.AliveSecond, "schema": s.Schema,
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,7 +56,29 @@ func (s *Service) Stop(channelID uint) error {
 	s.mu.Lock()
 	delete(s.planManaged, channelID)
 	s.mu.Unlock()
-	return s.db.Model(&ch).Update("recording", false).Error
+	if err := s.db.Model(&ch).Update("recording", false).Error; err != nil {
+		return err
+	}
+	// The finished segments only become visible in the catalog once ZLM closes
+	// the file, so sync now instead of waiting for the manual sync button.
+	s.syncRecent(channelID)
+	return nil
+}
+
+// syncRecent catalogs the segments ZLM has just finished. Segments are named
+// after their start time, so a recording that began before midnight lives in
+// the previous day's folder.
+func (s *Service) syncRecent(channelID uint) {
+	now := time.Now()
+	dates := []string{now.Format("2006-01-02")}
+	if now.Hour() < 2 {
+		dates = append(dates, now.AddDate(0, 0, -1).Format("2006-01-02"))
+	}
+	for _, d := range dates {
+		if _, err := s.Sync(channelID, d); err != nil {
+			log.Printf("[recording] catalog sync channel %d %s: %v", channelID, d, err)
+		}
+	}
 }
 
 // Sync pulls the recording file list for a channel/day from ZLM into the catalog.
@@ -73,7 +96,7 @@ func (s *Service) Sync(channelID uint, date string) ([]model.Recording, error) {
 	}
 	for _, p := range files.Paths {
 		var count int64
-		s.db.Model(&model.Recording{}).Where("channel_id = ? AND file = ?", channelID, p).Count(&count)
+		s.db.Model(&model.Recording{}).Where("channel_id = ? AND date = ? AND file = ?", channelID, date, p).Count(&count)
 		if count > 0 {
 			continue
 		}
@@ -82,7 +105,7 @@ func (s *Service) Sync(channelID uint, date string) ([]model.Recording, error) {
 			StreamKey: ch.StreamKey,
 			Date:      date,
 			File:      p,
-			URL:       s.zlm.RecordURL(ch.StreamKey, p),
+			URL:       s.zlm.RecordURL(ch.StreamKey, date, p),
 			StartTime: parseRecordTime(date, p),
 		}
 		s.db.Create(&rec)
@@ -245,14 +268,22 @@ func dayMatches(days string, wd time.Weekday) bool {
 	return false
 }
 
-// parseRecordTime parses a ZLM record path like "2024-01-02/14-30-00.mp4".
+// parseRecordTime parses the names ZLM reports for a segment. Depending on the
+// build it returns a bare "2024-01-02-14-30-00-0.mp4" or a dated path such as
+// "2024-01-02/14-30-00.mp4"; both must land on the real start time.
 func parseRecordTime(date, path string) time.Time {
-	base := strings.TrimSuffix(path, ".mp4")
-	parts := strings.Split(base, "/")
-	name := parts[len(parts)-1]
-	t, err := time.ParseInLocation("2006-01-02 15-04-05", date+" "+name, time.Local)
-	if err != nil {
-		return time.Now()
+	name := strings.TrimSuffix(filepath.Base(path), ".mp4")
+	candidates := []string{name}
+	if len(name) > 19 {
+		candidates = append(candidates, name[:19])
 	}
-	return t
+	for _, cand := range candidates {
+		if t, err := time.ParseInLocation("2006-01-02-15-04-05", cand, time.Local); err == nil {
+			return t
+		}
+		if t, err := time.ParseInLocation("2006-01-02 15-04-05", date+" "+cand, time.Local); err == nil {
+			return t
+		}
+	}
+	return time.Now()
 }

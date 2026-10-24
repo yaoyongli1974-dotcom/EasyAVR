@@ -164,13 +164,44 @@ func (c *Client) CloseRtpServer(streamKey string) error {
 
 // MediaStream is a minimal view of an active ZLM stream.
 type MediaStream struct {
-	App         string `json:"app"`
-	Stream      string `json:"stream"`
-	Schema      string `json:"schema"`
-	ReaderCount int    `json:"readerCount"`
-	OriginType  int    `json:"originType"`
-	Bytes       int64  `json:"bytes"`
-	AliveSecond int    `json:"aliveSecond"`
+	App              string `json:"app"`
+	Stream           string `json:"stream"`
+	Schema           string `json:"schema"`
+	ReaderCount      int    `json:"readerCount"`
+	TotalReaderCount int    `json:"totalReaderCount"`
+	OriginType       int    `json:"originType"`
+	TotalBytes       int64  `json:"totalBytes"`
+	BytesSpeed       int64  `json:"bytesSpeed"`
+	AliveSecond      int    `json:"aliveSecond"`
+}
+
+// SummarizeStreams folds the per-schema entries ZLM returns for one stream
+// (rtsp/rtmp/hls/fmp4/ts) into a single record. Every schema reports the same
+// cumulative byte counter, so the largest value wins; reader counts are
+// summed because each entry only counts its own schema.
+func SummarizeStreams(streams []MediaStream) map[string]MediaStream {
+	out := make(map[string]MediaStream, len(streams))
+	for _, s := range streams {
+		agg, ok := out[s.Stream]
+		if !ok {
+			agg = s
+		} else {
+			if s.TotalBytes > agg.TotalBytes {
+				agg.TotalBytes = s.TotalBytes
+			}
+			if s.AliveSecond > agg.AliveSecond {
+				agg.AliveSecond = s.AliveSecond
+			}
+			if s.ReaderCount > 0 {
+				agg.ReaderCount += s.ReaderCount
+			}
+		}
+		if s.TotalReaderCount > agg.TotalReaderCount {
+			agg.TotalReaderCount = s.TotalReaderCount
+		}
+		out[s.Stream] = agg
+	}
+	return out
 }
 
 // MediaList returns currently active streams.
@@ -267,8 +298,15 @@ func (c *Client) PushURL(streamKey string) string {
 	return c.portURL("rtmp", fmt.Sprintf("/%s/%s", DefaultApp, streamKey), c.RTMPPort)
 }
 
-// RecordURL builds the HTTP playback URL for a recorded file path returned by
-// GetMp4RecordFile (e.g. "2024-01-02/14-30-00.mp4").
-func (c *Client) RecordURL(streamKey, path string) string {
-	return c.portURL("http", fmt.Sprintf("/record/%s/%s/%s", DefaultApp, streamKey, strings.TrimPrefix(path, "/")), c.HTTPPort)
+// RecordURL builds the HTTP playback URL for a recorded file returned by
+// GetMp4RecordFile. ZLM versions differ here: some return a date-prefixed path
+// ("2024-01-02/14-30-00.mp4"), others only the file name of the day being
+// queried ("2024-01-02-14-30-00-0.mp4"). The HTTP layout always carries the
+// date directory, so add it when the path does not.
+func (c *Client) RecordURL(streamKey, date, path string) string {
+	rel := strings.TrimPrefix(path, "/")
+	if !strings.Contains(rel, "/") {
+		rel = date + "/" + rel
+	}
+	return c.portURL("http", fmt.Sprintf("/record/%s/%s/%s", DefaultApp, streamKey, rel), c.HTTPPort)
 }

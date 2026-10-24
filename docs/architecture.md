@@ -92,8 +92,12 @@ EasyAVR 是一个 **AI 原生的视频融合与智能视频资源管理平台**�
 - **播放鉴权**：`internal/playauth` 以 HMAC-SHA256 基于 `streamKey|exp` 签名，`EASYAVR_PLAY_AUTH=true` 时
   `play-urls`/`play-token` 附带 `token`+`exp`；`/play/verify` 与 `/zlm/on_play`（ZLM on_play 钩子）用于边缘校验，
   `EASYAVR_PLAY_WHITELIST` 限定可申请 token 的来源域名。
-- **流量与状态记录**：`ChannelTraffic` 保存 ZLM 上报的累计入流字节，`StatusLog` 记录设备/通道上下线与检测结果；
+- **流量与状态记录**：`ChannelTraffic` 保存 ZLM 上报的累计入流字节（ZLM 按 schema 返回多条同流记录，
+  取 `totalBytes` 最大值、`bytesSpeed`、`totalReaderCount`，见 `video.SummarizeStreams`），`StatusLog` 记录设备/通道上下线与检测结果；
   `POST /video/traffic/sync` 采样内核（`EASYAVR_MONITOR_SEC>0` 时后台周期采样），`POST /devices/:id/check` 做 TCP 健康检测。
+- **录像编目**：停止录像（含录像计划到点停止）后立即向 ZLM 拉取当日分片自动编目，不再依赖手动 sync；
+  回放地址统一为 `/record/<streamKey>/<date>/<file>`——ZLM 各版本 `getMp4RecordFile` 既可能返回
+  `date/file.mp4` 也可能只返回 `date-time-index.mp4`，`video.RecordURL` 会补齐日期目录。
 - **录像增强**：`Recording.Marked/Mark` 支持紧急标记；`POST /recordings/cleanup` 按各通道录像计划保存天数清理目录项。
 - **电子地图定位来源**：① 浏览器网络/GPS 定位（`navigator.geolocation`，「定位到我」/「使用我的当前位置」）；
   ② 设备 GPS：GB28181 `MobilePosition` 上报自动写入通道坐标与轨迹（`POST /gb/devices/:gbid/mobile-position` 可主动请求）；
