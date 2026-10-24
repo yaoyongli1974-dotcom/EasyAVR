@@ -749,3 +749,64 @@ export interface PolicyRule {
 export interface PolicyTestResult {
   allowed: boolean
 }
+
+export interface TranscodeJob {
+  id: number
+  channelId: number
+  name: string
+  mode: 'transcode' | 'osd' | 'both'
+  streamKey: string
+  text: string
+  position: string
+  fontSize: number
+  width: number
+  height: number
+  bitrate: number
+  enabled: boolean
+  status: 'stopped' | 'running' | 'failed'
+  lastError: string
+  pid: number
+}
+
+export interface TranscodeJobRow {
+  job: TranscodeJob
+  channel: string
+  running: boolean
+  fontFound: boolean
+  playUrls?: Record<string, string>
+}
+
+export interface CloudStore {
+  id: number
+  name: string
+  type: string
+  endpoint: string
+  bucket: string
+  accessKey: string
+  region: string
+  pathStyle: boolean
+  enabled: boolean
+  hasSecret?: boolean
+  createdAt?: string
+}
+
+export interface RecordingArchive {
+  id: number
+  recordId: number
+  channelId: number
+  streamKey: string
+  storeId: number
+  bucket: string
+  object: string
+  size: number
+  status: 'uploaded' | 'failed'
+  error: string
+  createdAt?: string
+}
+
+export interface ArchivePage {
+  items: RecordingArchive[]
+  total: number
+  page: number
+  pageSize: number
+}

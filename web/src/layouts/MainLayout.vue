@@ -18,6 +18,8 @@
           <el-menu-item index="/live">实时视频</el-menu-item>
           <el-menu-item index="/multiscreen">多屏播放</el-menu-item>
           <el-menu-item index="/recordings">录像回看</el-menu-item>
+          <el-menu-item index="/archives">归档列表</el-menu-item>
+          <el-menu-item index="/transcode">转码 / OSD</el-menu-item>
           <el-menu-item index="/snapshots">快照中心</el-menu-item>
           <el-menu-item index="/resources">视频资源中心</el-menu-item>
         </el-sub-menu>
@@ -41,6 +43,7 @@
           <el-menu-item index="/users">用户与角色</el-menu-item>
           <el-menu-item index="/policy">权限策略</el-menu-item>
           <el-menu-item index="/config">平台配置</el-menu-item>
+          <el-menu-item index="/storages">存储管理</el-menu-item>
           <el-menu-item index="/groups">设备分组</el-menu-item>
           <el-menu-item index="/map">电子地图</el-menu-item>
           <el-menu-item index="/audit">运维审计</el-menu-item>
@@ -119,6 +122,8 @@ const features: Feature[] = [
   { name: '实时视频', path: '/live', kw: 'live 直播 实时 云台 ptz 诊断 vqd 流量 状态' },
   { name: '多屏播放', path: '/multiscreen', kw: 'multi 分屏 轮播 多屏' },
   { name: '录像回看', path: '/recordings', kw: 'recording 录像 回看 倍速 时间轴 紧急标记' },
+  { name: '归档列表', path: '/archives', kw: 'archive 归档 云存储 bucket 对象 上传' },
+  { name: '转码 / OSD', path: '/transcode', kw: 'transcode 转码 osd 水印 派生流 字幕' },
   { name: '快照中心', path: '/snapshots', kw: 'snapshot 快照 抓拍' },
   { name: '视频资源中心', path: '/resources', kw: 'resource 资源 视频' },
   { name: 'AI 能力接入', path: '/ai/providers', kw: 'provider ai 能力 接入' },
@@ -134,6 +139,7 @@ const features: Feature[] = [
   { name: '用户与角色', path: '/users', kw: 'user role 用户 角色 批量 导入 导出' },
   { name: '权限策略', path: '/policy', kw: 'policy 权限 casbin 策略' },
   { name: '平台配置', path: '/config', kw: 'config 配置 gb28181 ehome gb35114 开关 播放鉴权 信令' },
+  { name: '存储管理', path: '/storages', kw: 'storage 存储 minio s3 oss 对象存储 凭证' },
   { name: '设备分组', path: '/groups', kw: 'group 分组' },
   { name: '电子地图', path: '/map', kw: 'map 地图 gis 轨迹 定位' },
   { name: '运维审计', path: '/audit', kw: 'audit 审计 日志 操作记录' },

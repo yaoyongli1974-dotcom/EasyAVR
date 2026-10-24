@@ -37,10 +37,11 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300">
+        <el-table-column label="操作" width="380">
           <template #default="{ row }">
             <el-button link type="success" @click="play(row)">回放</el-button>
             <el-button link type="primary" @click="download(row)">下载</el-button>
+            <el-button link type="primary" @click="openArchive(row)">归档到云</el-button>
             <el-button link type="warning" @click="toggleMark(row)">{{ row.marked ? '取消标记' : '紧急标记' }}</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
@@ -82,14 +83,53 @@
         </el-radio-group>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="archiveVisible" title="归档到云" width="520px">
+      <template v-if="!archiveResult">
+        <el-form label-width="90px">
+          <el-form-item label="录像">{{ archiveRow?.file }}</el-form-item>
+          <el-form-item label="目标存储">
+            <el-select v-model="archiveStoreId" filterable placeholder="选择云存储" style="width: 100%">
+              <el-option v-for="s in storages" :key="s.id" :label="`${s.name} (${s.bucket})`" :value="s.id" />
+            </el-select>
+            <div v-if="!storages.length" class="archive-hint">
+              尚未配置云存储，请先在「平台管理 → 存储管理」中新增
+            </div>
+          </el-form-item>
+        </el-form>
+        <div v-if="archives.length" class="archive-history">
+          <div class="archive-history-title">已有归档</div>
+          <div v-for="a in archives" :key="a.id" class="archive-history-item">
+            <el-tag :type="a.status === 'uploaded' ? 'success' : 'danger'" size="small">
+              {{ a.status === 'uploaded' ? '已上传' : '失败' }}
+            </el-tag>
+            <span>{{ a.bucket }}/{{ a.object }}（{{ formatSize(a.size) }}）</span>
+          </div>
+        </div>
+      </template>
+      <template v-else>
+        <el-result icon="success" title="已上传" :sub-title="`${archiveResult.bucket} / ${archiveResult.object}`">
+          <template #extra>
+            <span style="color: #64748b">大小：{{ formatSize(archiveResult.size) }}</span>
+          </template>
+        </el-result>
+      </template>
+      <template #footer>
+        <template v-if="!archiveResult">
+          <el-button @click="archiveVisible = false">取消</el-button>
+          <el-button type="primary" :loading="archiving" @click="doArchive">归档</el-button>
+        </template>
+        <el-button v-else type="primary" @click="archiveVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { channelApi, recordingApi } from '../api'
-import type { Channel, Recording } from '../types'
+import { channelApi, recordingApi, storageApi } from '../api'
+import type { Channel, CloudStore, Recording, RecordingArchive } from '../types'
 
 const channels = ref<Channel[]>([])
 const channelId = ref<number>()
@@ -179,6 +219,54 @@ function format(t: string) {
   return t ? new Date(t).toLocaleString() : ''
 }
 
+function formatSize(n?: number) {
+  if (n === undefined || n === null) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i ? 1 : 0)} ${units[i]}`
+}
+
+const storages = ref<CloudStore[]>([])
+const archives = ref<RecordingArchive[]>([])
+const archiveVisible = ref(false)
+const archiving = ref(false)
+const archiveRow = ref<Recording | null>(null)
+const archiveStoreId = ref<number>()
+const archiveResult = ref<RecordingArchive | null>(null)
+
+async function openArchive(row: Recording) {
+  archiveRow.value = row
+  archiveStoreId.value = undefined
+  archiveResult.value = null
+  archives.value = []
+  archiveVisible.value = true
+  storageApi.list().then((ss) => (storages.value = ss)).catch(() => (storages.value = []))
+  recordingApi.archives(row.id).then((a) => (archives.value = a)).catch(() => {})
+}
+
+async function doArchive() {
+  if (!archiveRow.value || !archiveStoreId.value) {
+    ElMessage.warning('请选择目标存储')
+    return
+  }
+  archiving.value = true
+  try {
+    const res = await recordingApi.archive(archiveRow.value.id, archiveStoreId.value)
+    archiveResult.value = res
+    ElMessage.success('已上传')
+    recordingApi.archives(archiveRow.value.id).then((a) => (archives.value = a)).catch(() => {})
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '归档失败，请确认对象存储可访问')
+  } finally {
+    archiving.value = false
+  }
+}
+
 onMounted(async () => {
   await loadChannels()
   if (channels.value.length) {
@@ -195,8 +283,7 @@ onMounted(async () => {
   background: #f8fafc;
   border-radius: 6px;
   padding-top: 24px;
-}
-.timeline-axis {
+}.timeline-axis {
   position: absolute;
   top: 4px;
   left: 0;
@@ -220,5 +307,29 @@ onMounted(async () => {
 }
 .segment.marked {
   background: #ef4444;
+}
+.archive-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 18px;
+}
+.archive-history {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+.archive-history-title {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.archive-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #334155;
+  margin-bottom: 4px;
+  word-break: break-all;
 }
 </style>

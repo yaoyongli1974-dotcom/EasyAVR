@@ -16,6 +16,7 @@ import type {
   APIKeyStats,
   APIRequestLog,
   ApiResult,
+  ArchivePage,
   AuditLog,
   AuditLogPage,
   Channel,
@@ -23,6 +24,7 @@ import type {
   ChannelGroupChannel,
   ChannelTraffic,
   ChannelVQD,
+  CloudStore,
   ClusterNode,
   Dataset,
   DatasetSample,
@@ -53,6 +55,7 @@ import type {
   PolicyTestResult,
   PTZPreset,
   Recording,
+  RecordingArchive,
   RecordingPlan,
   Role,
   SearchHit,
@@ -61,6 +64,8 @@ import type {
   TrackPoint,
   TrackStats,
   TrainingJob,
+  TranscodeJob,
+  TranscodeJobRow,
   User,
   UserGroup,
   VideoResource,
@@ -261,7 +266,35 @@ export const recordingApi = {
     unwrap<RecordingPlan>(client.put(`/channels/${channelId}/recording-plan`, plan)),
   mark: (id: number, body: { marked: boolean; mark?: string }) =>
     unwrap<Recording>(client.put(`/recordings/${id}/mark`, body)),
+  archive: (id: number, storeId: number) =>
+    unwrap<RecordingArchive>(client.post(`/recordings/${id}/archive`, { storeId })),
+  archives: (id: number) => unwrap<RecordingArchive[]>(client.get(`/recordings/${id}/archives`)),
   cleanup: (days = 0) => unwrap<{ removed: number }>(client.post('/recordings/cleanup', null, { params: { days } })),
+}
+
+export const transcodeApi = {
+  list: () => unwrap<TranscodeJobRow[]>(client.get('/transcode/jobs')),
+  get: (id: number) => unwrap<TranscodeJobRow>(client.get(`/transcode/jobs/${id}`)),
+  create: (body: Partial<TranscodeJob>) => unwrap<TranscodeJobRow>(client.post('/transcode/jobs', body)),
+  update: (id: number, body: Partial<TranscodeJob>) =>
+    unwrap<TranscodeJobRow>(client.put(`/transcode/jobs/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/transcode/jobs/${id}`)),
+  start: (id: number) => unwrap<TranscodeJobRow>(client.post(`/transcode/jobs/${id}/start`)),
+  stop: (id: number) => unwrap<TranscodeJobRow>(client.post(`/transcode/jobs/${id}/stop`)),
+}
+
+export const storageApi = {
+  list: () => unwrap<CloudStore[]>(client.get('/storages')),
+  create: (body: Partial<CloudStore> & { secretKey?: string }) =>
+    unwrap<CloudStore>(client.post('/storages', body)),
+  update: (id: number, body: Partial<CloudStore> & { secretKey?: string }) =>
+    unwrap<CloudStore>(client.put(`/storages/${id}`, body)),
+  remove: (id: number) => unwrap<{ id: number }>(client.delete(`/storages/${id}`)),
+  test: (id: number) => unwrap<{ id: number; ok: boolean }>(client.post(`/storages/${id}/test`, {})),
+}
+
+export const archiveApi = {
+  list: (params?: Record<string, unknown>) => unwrap<ArchivePage>(client.get('/archives', { params })),
 }
 
 export const snapshotApi = {
