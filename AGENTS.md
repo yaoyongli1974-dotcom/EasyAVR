@@ -24,6 +24,7 @@ make test        # Go tests
 make vet         # go vet
 make build       # server binary + web/dist
 make up / down   # ZLMediaKit via docker compose
+./scripts/smoke-video-e2e.sh   # real-kernel video path smoke (needs ZLM + ffmpeg + running API)
 ```
 
 Single Go test: `cd server && go test ./internal/server -run TestPlatformLifecycle -v`.
@@ -35,7 +36,8 @@ Verification order when changing backend: `make test` then `make vet`. Frontend:
 - **ZLMediaKit is external**: the platform shells out to ZLM's HTTP API. `EASYAVR_ZLM_SECRET` must match ZLM's `config.ini`; `docker-compose.yml` pins a non-default secret via `deploy/zlm/config.ini` (ZLM regenerates the secret when it is the stock default, so don't restore `035c73f7-...`). Most video endpoints fail gracefully (502) when ZLM is down.
 - **AI tasks need `ffmpeg` on PATH** to grab frames (`internal/media/frame.go`), and so do snapshots. The integration tests avoid this by setting `grabFrame:false` / not capturing, so `make test` needs **no ZLM and no ffmpeg**.
 - **GB28181 is Home-grown Go SIP signaling** (`internal/gb28181`), not a Java/third-party stack. It is disabled unless `EASYAVR_GB_ENABLED=true`; when disabled `App.gb` is nil and GB routes still respond (`/gb/config` reports `enabled:false`). Its test drives the full REGISTER→keepalive→catalog flow over UDP loopback with no media.
-- **Recording is delegated to ZLM** (`startRecord`/`getMp4RecordFile`); playback URLs point at ZLM's `/record/...` HTTP path. The platform only catalogs entries — it does not delete media files.
+- **Recording is delegated to ZLM** (`startRecord`/`getMp4RecordFile`); playback URLs point at ZLM's `/record/<streamKey>/<date>/<file>` HTTP path. The platform only catalogs entries — it does not delete media files. Stopping a recording auto-syncs the catalog (`syncRecent`), so plan-driven stops index too.
+- **ZLM media JSON is per-schema**: `getMediaList` returns one row per schema (hls/rtsp/rtmp/fmp4/ts) carrying `totalBytes`/`bytesSpeed`/`totalReaderCount` — there is no `bytes` field. Use `video.SummarizeStreams`; `getMp4RecordFile` also returns bare file names on this build, so use `video.RecordURL` (it adds the date directory). Reading the raw JSON directly has silently produced zero traffic and 404 playback links before.
 - Snapshot images are served unauthenticated at `/snapshots/*` so `<img>` tags work; all other routes require the JWT.
 - **Newly created AI events fan out through one `eventSink`** (`internal/server/sink.go`) to semantic indexing and notifications. If you add a code path that creates `model.AIEvent`, call `a.sink.OnEvent(ev)` (after the DB create, so the ID is set) or GB/GA ingest won't notify/index.
 - Semantic search silently falls back to keyword matching when no `kind=embedding` provider is enabled; GH/GA ingest endpoints (`/VIID/*`, `/api/v1/cluster/heartbeat`) and snapshots are mounted **outside** the JWT middleware.

@@ -439,3 +439,18 @@
   2. 待选型深化：转码 / OSD 水印（需定 ZLM 策略）、云存储归档（MinIO/S3/OSS 选型）。
   3. 可选功能：ROI 图像框选工作台、告警预案（报警类型→方式映射）、国标级联自动填充、录像超阈值自动删除（需 ZLM 配合删文件）。
   4. 前端包体偏大（`index` 1.13 MB、`VideoPlayer` 876 KB），可按需 `manualChunks` 拆分。
+
+### 2026-10-24（真实内核实测：录像 + 流量三处缺陷修复，新增冒烟脚本）
+- **背景**：开发库 0 设备 0 通道，视频全链路从未在真实 ZLMediaKit 上验证。用 ffmpeg `testsrc2` 推送合成 RTSP 流到 ZLM 冒充摄像机，再全程走平台 API，暴露了三处只有真内核才出现的缺陷。
+- **已完成**：
+  - **录像回放地址缺日期目录**：本机 ZLM 的 `getMp4RecordFile` 只返回文件名（`2026-10-24-16-02-01-0.mp4`），`RecordURL` 拼的是 `/record/live/<key>/<file>` → 404；实际路径需要 `/<date>/`。`video.RecordURL(streamKey, date, path)` 现按是否带 `/` 自动补日期；`parseRecordTime` 同时兼容「裸文件名 / 带日期路径 / 仅时间」三种形态（此前裸文件名解析失败，`StartTime` 全部退化成 `time.Now()`）。
+  - **停止录像不编目**：ZLM 已落盘但 `/channels/:id/recordings` 为空，必须手动点同步。`recording.Stop` 现在停止后立即 `syncRecent`（当日 + 跨零点时的前一日），录像计划到点停止同样生效；编目去重键改为 `channel_id + date + file`。
+  - **通道流量恒为 0**：ZLM 返回的是 `totalBytes`/`bytesSpeed`/`totalReaderCount`，没有 `bytes` 字段，`MediaStream.Bytes` 永远为零。新增 `video.SummarizeStreams`：按 schema（hls/rtsp/rtmp/fmp4/ts）多行合并为一条，取 `totalBytes` 最大值、累加 `readerCount`；流量采样与 `GET /channels/:id/traffic` 均改用它。
+  - **新增可复现冒烟**：`scripts/smoke-video-e2e.sh`——ffmpeg 造源 → 建夹具设备/通道 → 起流 → 播放地址 → ffprobe 播放诊断 → 抓拍 → VQD → 录像 6s → 停止后断言编目非空且回放 URL 可下载 → 断言流量字节 > 0，退出时自动清理夹具（`KEEP=1` 保留现场）。README / AGENTS.md 已登记。
+- **验证通过**：`./scripts/smoke-video-e2e.sh` → `SMOKE PASSED`（编目 1 条、回放 909 KB 可下载、流量 2.2 MB、诊断 h264/640x360、抓拍 19 KB 可访问）；`gofmt -l` 无输出、`go vet ./...`、`go test ./...`（新增 `video` 聚合/URL 单测、`recording` 停止编目/幂等/时间解析单测）；`cd web && npm run build` 未受影响仍通过。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：
+  1. 接真实摄像机（Hikvision/Dahua RTSP、ONVIF）复跑冒烟，确认厂商 RTSP 路径与鉴权；GB28181 侧仍需真实设备或 SIP 模拟器。
+  2. 待选型深化：转码 / OSD 水印（ZLM 策略）、云存储归档（MinIO/S3/OSS）。
+  3. 可选功能：ROI 图像框选工作台、告警预案（报警类型→通知方式映射）、国标级联自动填充、录像超阈值自动删除（需 ZLM 配合删文件）。
+  4. 前端包体（`index` 1.13 MB、`VideoPlayer` 876 KB）可按需 `manualChunks` 拆分。

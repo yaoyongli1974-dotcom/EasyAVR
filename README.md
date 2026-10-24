@@ -147,6 +147,16 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 登录 → 建设备（自动建主通道）→ 注册 CV 能力 → 创建任务 → 试跑 → 事件入库与统计。
 该测试使用假 CV worker，**不依赖 ZLMediaKit**，可直接 `make test` 运行。
 
+视频链路另有真实内核冒烟脚本，**不需要真实摄像机**：用 ffmpeg 生成测试画面推到 ZLMediaKit，
+再走 EasyAVR 的建通道 → 起流 → 播放地址 → 播放诊断 → 抓拍 → VQD → 录像 → 录像回放/流量 全流程，
+逐项断言并在退出时清理夹具设备。
+
+```bash
+docker compose up -d          # ZLMediaKit
+make run                      # 另开终端：API 已启动
+./scripts/smoke-video-e2e.sh  # 可用 EASYAVR_API / ZLM_API / ZLM_SECRET 覆盖默认值
+```
+
 ## 目录结构
 
 ```
