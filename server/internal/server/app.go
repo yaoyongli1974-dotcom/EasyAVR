@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/easyavr/easyavr/internal/ai"
+	"github.com/easyavr/easyavr/internal/archive"
 	"github.com/easyavr/easyavr/internal/auth"
 	"github.com/easyavr/easyavr/internal/cluster"
 	"github.com/easyavr/easyavr/internal/config"
@@ -31,6 +32,7 @@ import (
 	"github.com/easyavr/easyavr/internal/recording"
 	"github.com/easyavr/easyavr/internal/search"
 	"github.com/easyavr/easyavr/internal/snapshot"
+	"github.com/easyavr/easyavr/internal/transcode"
 	"github.com/easyavr/easyavr/internal/video"
 )
 
@@ -45,6 +47,8 @@ type App struct {
 	events  *event.Service
 	rec     *recording.Service
 	snaps   *snapshot.Service
+	arch    *archive.Service
+	tr      *transcode.Service
 	gb      *gb28181.Server
 	notify  *notify.Service
 	search  *search.Service
@@ -87,6 +91,8 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 		events:  event.NewService(db),
 		rec:     recording.NewService(db, zlm),
 		snaps:   snapshot.NewService(db, zlm, cfg.SnapshotDir),
+		arch:    archive.NewService(db, zlm),
+		tr:      transcode.NewService(db, zlm),
 		notify:  notifySvc,
 		search:  searchSvc,
 		cluster: cluster.NewService(cfg.Cluster, db),
@@ -152,6 +158,11 @@ func (a *App) Run() error {
 	}
 	if a.gaCas != nil {
 		a.gaCas.Start(ctx)
+	}
+	// Derived streams (转码/OSD): relaunch enabled pipelines in background;
+	// sources may not be online yet, failed jobs surface in the UI.
+	if a.tr != nil {
+		go a.tr.StartEnabled()
 	}
 	if a.settingBool("gb_enabled", a.cfg.GB.Enabled) {
 		if err := a.gb.Start(); err != nil {

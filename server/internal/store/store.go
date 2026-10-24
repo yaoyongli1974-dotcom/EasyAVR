@@ -130,6 +130,9 @@ func migrate(db *gorm.DB) error {
 		&model.Track{},
 		&model.PTZPreset{},
 		&model.AuditLog{},
+		&model.TranscodeJob{},
+		&model.CloudStore{},
+		&model.RecordingArchive{},
 	)
 }
 

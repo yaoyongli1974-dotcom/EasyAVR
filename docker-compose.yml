@@ -47,5 +47,25 @@ services:
       timeout: 5s
       retries: 10
 
+  # Optional S3-compatible object storage for 录像云归档 (MinIO). Start with:
+  #   docker compose --profile archive up -d minio
+  # then register it in the web UI (存储管理 /storages):
+  #   endpoint http://127.0.0.1:9000  bucket easyavr  path-style on
+  minio:
+    image: minio/minio:latest
+    container_name: easyavr-minio
+    restart: unless-stopped
+    profiles: ["archive"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: easyavr
+      MINIO_ROOT_PASSWORD: easyavr-minio
+    volumes:
+      - easyavr-minio:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
 volumes:
   easyavr-pgdata:
+  easyavr-minio:

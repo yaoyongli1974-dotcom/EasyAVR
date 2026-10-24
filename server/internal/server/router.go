@@ -162,6 +162,29 @@ func (a *App) buildRouter() *gin.Engine {
 	authed.POST("/recordings/cleanup", a.cleanupRecordings)
 	authed.PUT("/recordings/:id/mark", a.markRecording)
 	authed.DELETE("/recordings/:id", a.deleteRecording)
+	authed.POST("/recordings/:id/archive", a.archiveRecording)
+	authed.GET("/recordings/:id/archives", a.listRecordingArchives)
+	authed.GET("/archives", a.listArchives)
+
+	// 录像云归档: S3 兼容对象存储（MinIO/OSS/COS）。
+	storages := authed.Group("/storages")
+	storages.Use(a.adminRequired())
+	storages.GET("", a.listStores)
+	storages.POST("", a.createStore)
+	storages.PUT("/:id", a.updateStore)
+	storages.DELETE("/:id", a.deleteStore)
+	storages.POST("/:id/test", a.testStore)
+
+	// 转码/OSD 派生流: 平台侧 ffmpeg 管道到 ZLM 回推流。
+	tr := authed.Group("/transcode")
+	tr.Use(a.adminRequired())
+	tr.GET("/jobs", a.listTranscodeJobs)
+	tr.POST("/jobs", a.createTranscodeJob)
+	tr.GET("/jobs/:id", a.getTranscodeJob)
+	tr.PUT("/jobs/:id", a.updateTranscodeJob)
+	tr.DELETE("/jobs/:id", a.deleteTranscodeJob)
+	tr.POST("/jobs/:id/start", a.startTranscodeJob)
+	tr.POST("/jobs/:id/stop", a.stopTranscodeJob)
 
 	authed.GET("/snapshots", a.listSnapshots)
 	authed.DELETE("/snapshots/:id", a.deleteSnapshot)

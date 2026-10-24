@@ -221,6 +221,14 @@ func (c *Client) Healthy() bool {
 	return err == nil
 }
 
+// RTSPIngestURL is the local RTSP pull URL a platform-side pipeline uses as
+// its input (or push target): the media daemon always listens on the
+// loopback, so derived-stream workers never depend on the configured
+// MediaHost of the browser-facing player URLs.
+func (c *Client) RTSPIngestURL(streamKey string) string {
+	return fmt.Sprintf("rtsp://127.0.0.1:%d/%s/%s", c.RTSPPort, DefaultApp, streamKey)
+}
+
 // DeleteRecordDir removes a recorded day folder for a stream. This ZLM build
 // publishes the endpoint under a different name and method than older
 // releases: POST-only deleteRecordDirectory on the form endpoint (GET returns
