@@ -463,3 +463,13 @@
 - **验证通过**：`go vet ./...`、`go test ./...`（新增 `video.DeleteRecordDir` POST/404 单测、`recording` 清理删文件/只清目录/按计划通道隔离 3 项单测）；`cd web && npm run build`（vue-tsc + vite）通过。designer 线仅改 `AiTasks.vue`，与后端无文件交集。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：转码/OSD 水印（需定 ZLM 策略）、云存储归档（MinIO/S3/OSS 选型）、国标级联自动填充；真机环境就绪后复跑 `scripts/smoke-video-e2e.sh`。
+
+### 2026-10-24（宣传落地页 site/）
+- **已完成**：新增纯静态产品官网 `site/`（零构建、零外部依赖、双击可开），仅写入 `site/`，未触碰 web/ server/ deploy/ docs/ README.md：
+  - `index.html`：顶栏（锚点导航 + 进入平台 → app.easyavr.cn）、Hero（定位 + 在线演示/快速开始 CTA + 事实条）、能力矩阵 6 卡（设备接入/视频中台/AI 中台/事件中心/国标合规/开放运维，全部取自 README 二期三期清单）、架构节（分层 SVG + 「为什么不是 EasyCVR 复刻」短评 + 层→Go 包对应表）、快速开始三步代码块（带复制按钮）、开放 API 节（真实路径 `/api/v1/open/devices|events` + `X-API-Key` 要点，字段已对照 `model.AIEvent` 核实）、3 个虚线截图占位框、页脚（GitHub/邮箱占位含 TODO 注释，无备案号）。
+  - `assets/styles.css`：深色冷灰蓝 + 近 Element Plus `#409EFF` 强调色；系统字体栈；360/640/960 三档断点；WCAG AA 对比度；reduced-motion 与键盘可达（skip link、focus-visible）。
+  - `assets/main.js`：仅移动端导航开关、代码块复制（clipboard API + execCommand 回退）、IntersectionObserver 滚动入场；无第三方库。
+  - `assets/README.md`（site/README.md）：本地预览、nginx 部署片段（静态根 + app/demo 反代 :18000）、certbot 一句、截图/仓库/邮箱待补位置。
+- **验证**：`grep -rE "https?://"` 仅命中 app/demo 子域链接；`python3 -m http.server -d site` 起服务 curl 出 HTML（本机 8080 被无关 llama-server 占用，改用 18080 验证）；Google Chrome headless 截图核查 360/768/1440 三档布局与整页（含页底）无溢出错位；curl 上报事件示例字段 kind/eventType/level/channelId 已对照 `server/internal/model/models.go` `AIEvent` 定义核实。
+- **当前状态**：完成
+- **下一步**：替换 3 个截图占位（位置见 site/README.md）；确定 GitHub 仓库与联系邮箱后替换页脚 `href="#"` 占位；域名解析后 certbot 上 TLS。
