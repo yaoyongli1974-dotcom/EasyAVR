@@ -223,15 +223,62 @@ func (s *Service) evaluate() {
 			log.Printf("[recording] plan stopped channel %d", plan.ChannelID)
 		}
 		if desired && plan.RetentionDays > 0 {
-			s.cleanup(plan, now)
+			cutoff := now.AddDate(0, 0, -plan.RetentionDays).Format("2006-01-02")
+			if n := s.pruneBefore(plan.ChannelID, s.channelStreamKey(plan.ChannelID), cutoff, true, now); n > 0 {
+				log.Printf("[recording] retention pruned %d entries for channel %d", n, plan.ChannelID)
+			}
 		}
 	}
 }
 
-// cleanup drops catalog entries older than the plan retention window.
-func (s *Service) cleanup(plan model.RecordingPlan, now time.Time) {
-	cutoff := now.AddDate(0, 0, -plan.RetentionDays).Format("2006-01-02")
-	s.db.Where("channel_id = ? AND date < ?", plan.ChannelID, cutoff).Delete(&model.Recording{})
+// channelStreamKey looks up a channel's stream key, "" when unknown.
+func (s *Service) channelStreamKey(channelID uint) string {
+	var ch model.Channel
+	if err := s.db.Select("stream_key").First(&ch, channelID).Error; err != nil {
+		return ""
+	}
+	return ch.StreamKey
+}
+
+// pruneBefore drops a channel's catalog entries and (optionally) the media
+// files whose recording date is before cutoff. Segments are keyed by day, so
+// file deletion granularity is the date folder on the media core.
+func (s *Service) pruneBefore(channelID uint, streamKey, cutoff string, deleteFiles bool, now time.Time) int64 {
+	var dates []string
+	s.db.Model(&model.Recording{}).Where("channel_id = ? AND date < ?", channelID, cutoff).Distinct().Pluck("date", &dates)
+	res := s.db.Where("channel_id = ? AND date < ?", channelID, cutoff).Delete(&model.Recording{})
+	if deleteFiles {
+		for _, d := range dates {
+			if err := s.zlm.DeleteRecordDir(streamKey, d); err != nil {
+				log.Printf("[recording] delete files channel %d %s: %v", channelID, d, err)
+			}
+		}
+	}
+	return res.RowsAffected
+}
+
+// Cleanup prunes expired recordings. days > 0 applies a window to every
+// channel; otherwise each channel plan's RetentionDays decides. deleteFiles
+// also removes the date folders from the media core (录像存储阈值自动删除).
+func (s *Service) Cleanup(days int, deleteFiles bool) (int64, error) {
+	now := time.Now()
+	removed := int64(0)
+	if days > 0 {
+		cutoff := now.AddDate(0, 0, -days).Format("2006-01-02")
+		var channels []model.Channel
+		s.db.Find(&channels)
+		for _, ch := range channels {
+			removed += s.pruneBefore(ch.ID, ch.StreamKey, cutoff, deleteFiles, now)
+		}
+		return removed, nil
+	}
+	var plans []model.RecordingPlan
+	s.db.Where("retention_days > 0").Find(&plans)
+	for _, p := range plans {
+		cutoff := now.AddDate(0, 0, -p.RetentionDays).Format("2006-01-02")
+		removed += s.pruneBefore(p.ChannelID, s.channelStreamKey(p.ChannelID), cutoff, deleteFiles, now)
+	}
+	return removed, nil
 }
 
 func planMatches(plan model.RecordingPlan, now time.Time) bool {

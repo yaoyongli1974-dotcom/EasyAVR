@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -109,29 +108,19 @@ func (a *App) markRecording(c *gin.Context) {
 	ok(c, rec)
 }
 
-// cleanupRecordings prunes catalog entries older than the retention window
-// (手册 3.7.2.1 录像存储阈值). Days=0 uses each channel plan's RetentionDays.
+// cleanupRecordings enforces the retention policy (手册 3.7.2.1 录像存储阈值).
+// days>0 applies a window to every channel, otherwise each channel plan's
+// RetentionDays decides. files=1 (default) also deletes the day folders on the
+// media core; files=0 only prunes the catalog.
 func (a *App) cleanupRecordings(c *gin.Context) {
 	days, _ := strconv.Atoi(c.Query("days"))
-	now := time.Now()
-	removed := int64(0)
-	if days > 0 {
-		cutoff := now.AddDate(0, 0, -days)
-		res := a.db.Where("start_time < ?", cutoff).Delete(&model.Recording{})
-		removed += res.RowsAffected
-	} else {
-		var plans []model.RecordingPlan
-		a.db.Find(&plans)
-		for _, p := range plans {
-			if p.RetentionDays <= 0 {
-				continue
-			}
-			cutoff := now.AddDate(0, 0, -p.RetentionDays)
-			res := a.db.Where("channel_id = ? AND start_time < ?", p.ChannelID, cutoff).Delete(&model.Recording{})
-			removed += res.RowsAffected
-		}
+	deleteFiles := c.Query("files") != "0"
+	removed, err := a.rec.Cleanup(days, deleteFiles)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
 	}
-	ok(c, gin.H{"removed": removed})
+	ok(c, gin.H{"removed": removed, "filesDeleted": deleteFiles})
 }
 
 func (a *App) getRecordingPlan(c *gin.Context) {

@@ -98,7 +98,10 @@ EasyAVR 是一个 **AI 原生的视频融合与智能视频资源管理平台**�
 - **录像编目**：停止录像（含录像计划到点停止）后立即向 ZLM 拉取当日分片自动编目，不再依赖手动 sync；
   回放地址统一为 `/record/<streamKey>/<date>/<file>`——ZLM 各版本 `getMp4RecordFile` 既可能返回
   `date/file.mp4` 也可能只返回 `date-time-index.mp4`，`video.RecordURL` 会补齐日期目录。
-- **录像增强**：`Recording.Marked/Mark` 支持紧急标记；`POST /recordings/cleanup` 按各通道录像计划保存天数清理目录项。
+- **录像增强**：`Recording.Marked/Mark` 支持紧急标记；保留期清理会**真实删除超期文件**——
+  `POST /recordings/cleanup?days=N&files=1`（缺省 files=1，`files=0` 只清目录）按各通道录像计划
+  `RetentionDays` 或全局 `days` 生效，通过 ZLM POST-only `deleteRecordDirectory` 删除对应日期目录；
+  录像计划到点也会按时清理（`recording.evaluate` 每轮执行保留期检查）。
 - **电子地图定位来源**：① 浏览器网络/GPS 定位（`navigator.geolocation`，「定位到我」/「使用我的当前位置」）；
   ② 设备 GPS：GB28181 `MobilePosition` 上报自动写入通道坐标与轨迹（`POST /gb/devices/:gbid/mobile-position` 可主动请求）；
   ③ 地点搜索/联想（`internal/geo`，配置 `EASYAVR_AMAP_KEY` 用高德，否则回落 OpenStreetMap Nominatim）；

@@ -221,6 +221,30 @@ func (c *Client) Healthy() bool {
 	return err == nil
 }
 
+// DeleteRecordDir removes a recorded day folder for a stream. This ZLM build
+// publishes the endpoint under a different name and method than older
+// releases: POST-only deleteRecordDirectory on the form endpoint (GET returns
+// the 404 page). It answers code:-1 once the directory is already gone, so
+// only transport errors are treated as failures.
+func (c *Client) DeleteRecordDir(streamKey, period string) error {
+	vals := url.Values{}
+	vals.Set("secret", c.secret)
+	vals.Set("vhost", "__defaultVhost__")
+	vals.Set("app", DefaultApp)
+	vals.Set("stream", streamKey)
+	vals.Set("period", period)
+	resp, err := c.http.PostForm(fmt.Sprintf("%s/index/api/deleteRecordDirectory", c.apiBase), vals)
+	if err != nil {
+		return fmt.Errorf("zlm deleteRecordDirectory failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("zlm api deleteRecordDirectory unavailable")
+	}
+	_, _ = io.ReadAll(resp.Body)
+	return nil
+}
+
 // RecordFile is the result of listing recorded mp4 files for a stream.
 type RecordFile struct {
 	RootPath string   `json:"rootPath"`

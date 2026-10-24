@@ -1,6 +1,9 @@
 package video
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -57,5 +60,57 @@ func TestRecordURL(t *testing.T) {
 				t.Fatalf("malformed url %q", got)
 			}
 		})
+	}
+}
+
+// DeleteRecordDir is POST-only on this ZLM build; the client must use the form
+// endpoint and surface 404 as an error (the endpoint name differs across
+// ZLM releases, and a silent no-op would leave media files behind).
+func TestDeleteRecordDir(t *testing.T) {
+	var got rtspRecorder
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.method = r.Method
+		got.path = r.URL.Path
+		if r.Method == http.MethodPost {
+			if err := r.ParseForm(); err == nil {
+				got.stream = r.FormValue("stream")
+				got.period = r.FormValue("period")
+			}
+		}
+		if r.URL.Query().Get("fail") == "404" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "s", "127.0.0.1", 80, 8080, 554, 1935)
+	if err := c.DeleteRecordDir("ch_x", "2026-10-24"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got.method != http.MethodPost || !strings.HasSuffix(got.path, "/index/api/deleteRecordDirectory") {
+		t.Fatalf("request = %s %s, want POST .../deleteRecordDirectory", got.method, got.path)
+	}
+	if got.stream != "ch_x" || got.period != "2026-10-24" {
+		t.Fatalf("params stream=%q period=%q", got.stream, got.period)
+	}
+}
+
+type rtspRecorder struct{ method, path, stream, period string }
+
+func TestDeleteRecordDirUnsupported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fail") != "" {
+			// nothing
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL+"?fail=1", "s", "127.0.0.1", 80, 8080, 554, 1935)
+	// PostForm to "URL?fail=1" appends form params; the handler 404s when the
+	// fail marker is present, which is what an older ZLM (missing endpoint) does.
+	if err := c.DeleteRecordDir("ch_x", "2026-10-24"); err == nil {
+		t.Fatal("expected error when ZLM returns 404 for the delete endpoint")
 	}
 }
