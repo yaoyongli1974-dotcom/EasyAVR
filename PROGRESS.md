@@ -454,3 +454,12 @@
   2. 待选型深化：转码 / OSD 水印（ZLM 策略）、云存储归档（MinIO/S3/OSS）。
   3. 可选功能：ROI 图像框选工作台、告警预案（报警类型→通知方式映射）、国标级联自动填充、录像超阈值自动删除（需 ZLM 配合删文件）。
   4. 前端包体（`index` 1.13 MB、`VideoPlayer` 876 KB）可按需 `manualChunks` 拆分。
+
+### 2026-10-24（新功能批次：ROI 框选工作台 + 录像保留期真实删文件 + 前端分包）
+- **已完成**：
+  - **ROI 框选工作台**（`web/src/views/AiTasks.vue`，「框选区域」按钮 + 弹窗）：选通道实时抓拍预览，SVG overlay 按图自然尺寸归一化坐标，拖拽绘矩形（鼠标/触屏）、多区域、可拖移、区域列表/删除/清空；「应用」把 `[[x1,y1,x2,y2],...]`（0–1 归一化两位小数）写入 `form.roi`，兼容既有 ROI 数据回填，解析失败从空白开始；抓拍失败有 el-empty 空态与重试。textarea 保留为唯一数据源，保存流程未动。
+  - **录像保留期真实删文件**（`recording.Cleanup` + `video.DeleteRecordDir`）：`POST /recordings/cleanup?days=N&files=1`（缺省删文件，`files=0` 只清目录）与录像计划到点轮询都走统一清理——目录行按 `date < cutoff` 剪除，媒体端通过 ZLM **POST-only** `deleteRecordDirectory` 删除对应日期目录（本机 ZLM 实测：GET 的 `deleteFileRecordDirectory` 404，POST `deleteRecordDirectory` 有效，code:-1 亦算成功）。此前平台「只编目不删文件」，现在保留期落到磁盘。
+  - **前端分包与开发代理**（`web/vite.config.ts`）：manualChunks 拆出 vendor-vue/element/map/player，主包 1.13MB → 22.9KB；dev 代理补 `/snapshots`（快照静态图在 dev 模式原先 404，快照页与 ROI 工作台都受影响）。
+- **验证通过**：`go vet ./...`、`go test ./...`（新增 `video.DeleteRecordDir` POST/404 单测、`recording` 清理删文件/只清目录/按计划通道隔离 3 项单测）；`cd web && npm run build`（vue-tsc + vite）通过。designer 线仅改 `AiTasks.vue`，与后端无文件交集。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：转码/OSD 水印（需定 ZLM 策略）、云存储归档（MinIO/S3/OSS 选型）、国标级联自动填充；真机环境就绪后复跑 `scripts/smoke-video-e2e.sh`。
