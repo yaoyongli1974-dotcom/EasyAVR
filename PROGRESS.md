@@ -473,3 +473,27 @@
 - **验证**：`grep -rE "https?://"` 仅命中 app/demo 子域链接；`python3 -m http.server -d site` 起服务 curl 出 HTML（本机 8080 被无关 llama-server 占用，改用 18080 验证）；Google Chrome headless 截图核查 360/768/1440 三档布局与整页（含页底）无溢出错位；curl 上报事件示例字段 kind/eventType/level/channelId 已对照 `server/internal/model/models.go` `AIEvent` 定义核实。
 - **当前状态**：完成
 - **下一步**：替换 3 个截图占位（位置见 site/README.md）；确定 GitHub 仓库与联系邮箱后替换页脚 `href="#"` 占位；域名解析后 certbot 上 TLS。
+
+### 2026-10-24（site/ 落地页合规修订）
+- **已完成**：按确认后的主体信息与三条约束修订 `site/`：
+  - 页脚版权行改为 `© 2026 西安莱驰云信息科技有限公司`（全称），沿用无备案号原则，未留备案占位。
+  - 广告法自查并清理用户可见文案：删除「为什么不是 EasyCVR 类产品的复刻」标题与对比性表述（改为「三平面的职责边界」，只陈述自身架构）；「覆盖……的完整链路」→「从设备接入到告警处置」；「设备级最少负载调度」→「设备按节点负载分配」（技术含义不变，规避「最」字）；「完整平台/完整测试」→中性表述。全文违禁词（最/第一/唯一/领先/顶级/独家/首家/国家级/标杆/优于）扫描 clean。
+  - 首版无表单无信息收集（`<form>/<input>/<textarea>/<select>` 零命中）；页脚「联系」一节改「联系我们」为 `mailto:contact@example.com` 占位（HTML 注释 TODO 待填真实企业邮箱），GitHub 占位保留。
+  - `site/README.md` 同步：待补清单更新为 GitHub / 企业邮箱两项，约束备忘新增运营主体、广告法（含新文案自查规则）、不收集个人信息三条。
+- **验证**：违禁词 / 备案 / 表单三项 grep 清零；URL 扫描仍仅 8 处 app/demo 子域；headless 截图确认页脚渲染正常。
+- **当前状态**：完成
+- **下一步**：截图占位替换、GitHub/邮箱占位补齐（见 site/README.md）；域名解析后 certbot 上 TLS。
+
+### 2026-10-24（site/ 联系邮箱定稿）
+- **已完成**：页脚联系邮箱确认为 `avr@easyavr.cn`——占位 `contact@example.com` 及对应 TODO 注释已移除，链接改为 `mailto:avr@easyavr.cn`（链接文案直接显示邮箱）；`site/README.md` 待补清单删去邮箱项并注明「已定，勿改动」。剩余待补仅 GitHub 仓库地址一处。
+- **当前状态**：完成
+- **下一步**：GitHub 仓库占位、截图替换；域名解析后 certbot 上 TLS，同时确认 MX 记录使 avr@easyavr.cn 可收信。
+
+### 2026-10-24（转码/OSD 派生流 + 录像云归档，后端+前端+文档）
+- **已完成**（ZLM 策略自定：不用 ZLM 容器内 ffmpeg，改为平台侧 ffmpeg 进程）：
+  - **转码/OSD 水印**（`internal/transcode` + 「转码与水印」页）：ffmpeg 从本机 RTSP 回环拉源流（`video.RTSPIngestURL`），按任务设置转码（H.264 libx264 veryfast + 码率/分辨率，-2 自适应）并叠加 drawtext 水印（CJK 字体自动探测，NotoSansCJK 优先；文本转义、四角与字号可控），派生流 `live/<streamKey>_t` 回推 ZLM；播放地址由 ZLM 下发，与原生源流同样可用。任务随平台启动自动拉起 Enabled 任务；进程崩溃自动置 failed（保留 stderr 尾部）并停用。API：`/transcode/jobs` CRUD + start/stop（运行中禁改配置，409）。
+  - **录像云归档**（`internal/archive` + 「存储管理/归档列表」页）：S3 兼容对象存储（minio-go，纯 Go），录像一键归档（录像回看页「归档到云」）流式直传不落临时盘；同一录像去重仅一条归档记录，失败原因入库（截断 500 字）；`/storages` 桶管理（管理员专属，密钥不序列化、留空保持旧值）+ 连通性测试自动建桶。可选 `docker compose --profile archive up -d` 起 MinIO。
+  - **前端**（designer 线交付，ses_e92e07612ffeNQx6xwFdNuI5by）：Transcode.vue（状态标签、行展开播放地址、字体缺失页级横幅）、Storages.vue、Archives.vue、Recordings.vue 归档入口、路由/菜单/Ctrl+K 登记，API 均对照 handler 字段核实。
+- **验证通过**：实机全链路——ffmpeg 合成源 1280x720，转码+水印任务产生派生流（getMediaList 五协议齐全、totalBytes>0），抽帧确认水印渲染正确；录像 → 归档 MinIO → `archives?status=uploaded` → 重复归档去重；边缘用例（非法 mode 400、运行中 PUT 409）过。`go vet`、`go test ./...` 全绿；`cd web && npm run build`（vue-tsc + vite）零错误。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：真实摄像机接入复跑冒烟；国标级联自动填充；告警预案（报警类型→通知方式映射）；真机环境就绪后按聊天记录复测。

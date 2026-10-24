@@ -109,7 +109,7 @@
 <section class="section wrap" id="caps">
   <header class="sec-head reveal">
     <p class="kicker">能力矩阵</p>
-    <h2>六个能力域，覆盖从取流到告警处置的完整链路</h2>
+    <h2>六个能力域，从设备接入到告警处置</h2>
   </header>
 
   <div class="caps">
@@ -173,7 +173,7 @@
       <ul>
         <li>开放 API：<code>/api/v1/open/*</code>，API Key + scope + 限流 + 每日配额 + 审计</li>
         <li>OpenAPI 3.0 文档随服务提供</li>
-        <li>集群：节点注册 / 心跳与设备级最少负载调度</li>
+        <li>集群：节点注册 / 心跳，设备按节点负载分配</li>
         <li>Casbin 统一权限策略，默认 admin / operator / viewer</li>
         <li>播放地址 HMAC 签名鉴权，支持来源白名单与 ZLM <code>on_play</code> 钩子校验</li>
       </ul>
@@ -253,8 +253,8 @@
 
     <div class="arch-side">
       <div class="reveal">
-        <h3>为什么不是 EasyCVR 类产品的复刻</h3>
-        <p>传统视频平台把 AI 当作挂在视频通道上的附属功能，图像分析在取流链路里就地完成，模型、任务与事件没有独立的位置。EasyAVR 反过来做：设备接入平面只负责把异构协议归一化为通道；流处理整体交给外置内核 ZLMediaKit，平台自身只做资源编目与业务编排；AI 是与视频平行的独立中台——任何 AI 后端实现统一的 <code>Analyzer</code> 接口即可接入，按任务调度，产出统一结构的事件。</p>
+        <h3>三平面的职责边界</h3>
+        <p>EasyAVR 的三平面分工明确：设备接入平面负责把异构协议归一化为通道；流处理整体交给外置内核 ZLMediaKit，平台自身只做资源编目与业务编排；AI 是与视频平行的独立中台——任何 AI 后端实现统一的 <code>Analyzer</code> 接口即可接入，按任务调度，产出统一结构的事件，分析逻辑不嵌入取流链路。</p>
         <p>两个中心把结果收敛：视频资源中心统一编目实时流、录像与快照；AI 事件中心负责事件的存储、语义检索、分级分发与地图呈现。Web、APP 与第三方系统共用同一开放层，不各自造接口。</p>
       </div>
       <div class="reveal arch-map">
@@ -381,7 +381,7 @@ curl -X POST -H "X-API-Key: 你的API密钥" \
 <!-- ================= 底部 CTA ================= -->
 <section class="section wrap endcta reveal">
   <h2>部署评估或接口对接，从这里开始</h2>
-  <p class="lead">在线演示环境可直接体验完整平台；源码仓库提供三步启动与完整测试。</p>
+  <p class="lead">在线演示环境可体验平台功能，源码仓库提供三步启动与测试。</p>
   <p class="hero-cta">
     <a class="btn btn-primary" href="https://demo.easyavr.cn">在线演示</a>
     <a class="btn btn-ghost" href="https://app.easyavr.cn">进入平台</a>
@@ -409,15 +409,14 @@ curl -X POST -H "X-API-Key: 你的API密钥" \
       <a href="https://demo.easyavr.cn">demo.easyavr.cn</a>
     </div>
     <div class="foot-col">
-      <h3>参与</h3>
+      <h3>联系</h3>
       <!-- TODO: GitHub 仓库地址确定后替换 href -->
       <a href="#">GitHub 仓库（待补充）</a>
-      <!-- TODO: 联系邮箱确定后替换 href 为 mailto: -->
-      <a href="#">联系邮箱（待补充）</a>
+      <a href="mailto:avr@easyavr.cn">avr@easyavr.cn</a>
     </div>
   </div>
   <div class="wrap foot-foot">
-    <p>© 2026 EasyAVR · easyavr.cn</p>
+    <p>© 2026 西安莱驰云信息科技有限公司</p>
   </div>
 </footer>
 
