@@ -18,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 
@@ -100,8 +100,16 @@ async function playWebRTC(url: string, video: HTMLVideoElement) {
       headers: { 'Content-Type': 'application/sdp' },
       body: offer.sdp,
     })
-    const answer = await res.text()
-    await pc.setRemoteDescription({ type: 'answer', sdp: answer })
+    const body = await res.text()
+    let sdp = body
+    if (body.trimStart().startsWith('{')) {
+      // Newer ZLMediaKit builds answer with JSON: {"code":0,"sdp":"v=0..."}.
+      const j = JSON.parse(body) as { code?: number; sdp?: string; msg?: string }
+      if (j.code !== 0 || !j.sdp) throw new Error(j.msg || `code ${j.code}`)
+      sdp = j.sdp
+    }
+    if (!sdp.startsWith('v=')) throw new Error('SDP 应答无效')
+    await pc.setRemoteDescription({ type: 'answer', sdp })
   } catch (e: any) {
     error.value = 'WebRTC 播放失败：' + (e?.message || e)
   }
@@ -114,7 +122,10 @@ function copy() {
 watch(() => props.urls, reload, { deep: true })
 watch(() => props.initial, (v) => { if (v) { protocol.value = v; reload() } })
 
-reload()
+// The element ref is only bound after mount, so the initial call has to wait for
+// it: consumers that mount the player with urls already set (multi-screen) never
+// trigger the watcher.
+onMounted(reload)
 onBeforeUnmount(cleanup)
 defineExpose({ reload })
 </script>

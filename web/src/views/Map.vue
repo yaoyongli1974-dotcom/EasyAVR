@@ -329,19 +329,31 @@ function buildDeviceTree(groups: any[]) {
   })
   // Attach devices to groups
   const devicesByGroup = new Map<number, Device[]>()
+  const ungrouped: Device[] = []
   mapDevices.value.forEach(d => {
-    if (d.groupId) {
+    if (d.groupId && groupMap.has(d.groupId)) {
       const arr = devicesByGroup.get(d.groupId) || []
       arr.push(d)
       devicesByGroup.set(d.groupId, arr)
+    } else {
+      ungrouped.push(d)
     }
   })
+  // Recurse into child groups first, then append device leaves: leaves have no
+  // children of their own, so visiting them would blow up the recursion.
   function attachDevices(node: any) {
+    node.children.forEach(attachDevices)
     const devs = devicesByGroup.get(node.id) || []
     devs.forEach(d => node.children.push({ ...d, isDevice: true, leaf: true }))
-    node.children.forEach(attachDevices)
   }
   roots.forEach(attachDevices)
+  if (ungrouped.length) {
+    roots.push({
+      id: 0,
+      name: '未分组',
+      children: ungrouped.map(d => ({ ...d, isDevice: true, leaf: true })),
+    })
+  }
   deviceTree.value = roots
 }
 

@@ -74,8 +74,17 @@ const loading = ref(false)
 const info = ref<Record<string, any>>({})
 const video = ref<Record<string, any>>({})
 const eventStats = ref<Record<string, any>>({})
-const planes = computed(() => info.value.planes ?? { deviceAccess: {}, ai: {} })
-const planeEvents = computed(() => info.value.planes?.ai?.events ?? 0)
+const planes = computed(() => {
+  const p = info.value.planes ?? {}
+  return {
+    devices: p.deviceAccess?.devices ?? 0,
+    channels: p.deviceAccess?.channels ?? 0,
+    providers: p.ai?.providers ?? 0,
+    tasks: p.ai?.tasks ?? 0,
+    events: p.ai?.events ?? 0,
+  }
+})
+const planeEvents = computed(() => planes.value.events)
 const typeRows = computed(() =>
   Object.entries(eventStats.value.byType || {}).map(([type, count]) => ({ type, count })),
 )
