@@ -89,5 +89,18 @@
     });
   }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
 
+  /* 兜底：页面加载 2.2s 后未入场的元素全部放行，
+     避免打印、截图工具或观察器异常导致内容缺失 */
+  var release = function () {
+    for (var n = 0; n < reveal.length; n++) {
+      reveal[n].classList.add('in');
+      io.unobserve(reveal[n]);
+    }
+  };
+  window.addEventListener('load', function () {
+    setTimeout(release, 2200);
+  });
+  setTimeout(release, 4500);
+
   for (var k = 0; k < reveal.length; k++) io.observe(reveal[k]);
 })();

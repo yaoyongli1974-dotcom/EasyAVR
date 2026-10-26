@@ -52,6 +52,7 @@
     </ul>
   </div>
   <figure class="hero-fig reveal" role="img" aria-label="EasyAVR 分层示意图：设备接入、视频中台、AI 中台三个平面，向下汇入视频资源中心与 AI 事件中心，再经由统一开放层对 Web、APP 与第三方 API 提供服务">
+    <div class="dg-desktop" aria-hidden="true">
     <svg class="dg" viewBox="0 0 520 360" width="100%" role="presentation" focusable="false">
       <!-- 三平面 -->
       <g class="dg-plane">
@@ -101,6 +102,37 @@
         <text class="dg-sub" x="80" y="332">Web 端 · APP · 第三方 API（JWT / API Key）</text>
       </g>
     </svg>
+    </div>
+    <div class="dg-mobile" role="presentation">
+      <div class="dv-blk">
+        <p class="dv-t">设备接入</p>
+        <p class="dv-s">GB28181 SIP · RTSP / RTMP · ONVIF · 海康 ISAPI · EHOME/ISUP</p>
+      </div>
+      <div class="dv-blk">
+        <p class="dv-t">视频中台</p>
+        <p class="dv-s">拉流 · 转码 · 分发 · HTTP-FLV · HLS · WebRTC · RTSP · RTMP · 收流（RTP / 国标）</p>
+      </div>
+      <div class="dv-blk dv-ai">
+        <p class="dv-t">AI 智能中台</p>
+        <p class="dv-s">CV 外部检测 · VLM / LLM 兼容端点 · 帧抽取 · 任务 ROI 与分析计划</p>
+      </div>
+      <span class="dv-link"></span>
+      <div class="dv-2col">
+        <div class="dv-blk dv-center">
+          <p class="dv-t">视频资源中心</p>
+          <p class="dv-s">实时 · 录像 · 快照</p>
+        </div>
+        <div class="dv-blk dv-center">
+          <p class="dv-t">AI 事件中心</p>
+          <p class="dv-s">检索 · 分发 · 地图</p>
+        </div>
+      </div>
+      <span class="dv-link"></span>
+      <div class="dv-blk dv-open">
+        <p class="dv-t">统一开放层</p>
+        <p class="dv-s">Web 端 · APP · 第三方 API（JWT / API Key）</p>
+      </div>
+    </div>
     <figcaption class="fig-cap">三平面两中心一开放层 — 依据 docs/architecture.md 实际结构绘制</figcaption>
   </figure>
 </section>
@@ -121,17 +153,19 @@
         <li>GB28181 接入：REGISTER 摘要鉴权、目录自动建通道、实时 INVITE 点播</li>
         <li>EHOME / ISUP 私有协议接入端点，默认纯 Go 实现</li>
         <li>设备与通道 CSV 批量导入导出</li>
+        <li>设备 TCP 健康检测与上下线状态记录</li>
       </ul>
     </article>
 
     <article class="card reveal">
       <h3><span class="card-idx" aria-hidden="true">02</span>视频中台</h3>
       <ul>
-        <li>ZLMediaKit 内核负责拉流、转码与多协议分发</li>
+        <li>外置内核 ZLMediaKit 承担拉流与多协议分发，平台经 HTTP API 编排</li>
+        <li>派生转码由平台侧 ffmpeg 回推内核产出转码流，不依赖内核自带 ffmpeg</li>
         <li>1 / 4 / 9 / 16 分屏 WebRTC 实时播放，轮播与播放记忆</li>
         <li>录像回看：按日期编目检索、0.5–16 倍速回放、按天/时段录像计划</li>
-        <li>云台 PTZ 方向 / 变倍 / 预置位，按设备协议自动路由</li>
-        <li>通道诊断：ffprobe 播放诊断 + VQD 十二项视频质量检测</li>
+        <li>云归档：录像流式上传 S3 兼容对象存储（MinIO / OSS / COS，同一录像去重）</li>
+        <li>云台 PTZ（方向 / 变倍 / 预置位，按设备协议路由）与通道诊断（ffprobe 播放诊断 + VQD 十二项检测）</li>
       </ul>
     </article>
 
@@ -139,6 +173,7 @@
       <h3><span class="card-idx" aria-hidden="true">03</span>AI 中台</h3>
       <ul>
         <li>CV / VLM / LLM 多 provider 统一抽象，任何兼容后端实现接口即可接入</li>
+        <li>能力端点按 kind 注册：cv / vlm / llm / embedding（embedding 启用语义检索）</li>
         <li>AI 任务支持 ROI 区域、分析灵敏度与每天 / 工作日分析计划</li>
         <li>ffmpeg 帧抽取，CV / VLM 不需要经过浏览器</li>
         <li>模型注册 / 版本 / 部署三层管理，与运行时能力状态联动</li>
@@ -149,6 +184,7 @@
     <article class="card reveal">
       <h3><span class="card-idx" aria-hidden="true">04</span>事件中心</h3>
       <ul>
+        <li>事件统一存储、检索与统计，入库即触发语义索引与通知投递</li>
         <li>告警策略分级分发：即时投递 + 未确认延迟升级</li>
         <li>冷却抑制与事件确认，确认后阻止继续升级</li>
         <li>投递全量审计；Webhook / 邮件渠道按级别、类型匹配</li>
@@ -165,6 +201,7 @@
         <li>GB35114：SM2 平台 CA、设备证书签发 / 登记 / 校验 / 吊销</li>
         <li>SM3 摘要工具与 GM/T 0024 安全 SIP / TLS 双向证书认证</li>
         <li>GB28181 / EHOME 注册黑白名单拦截</li>
+        <li>GB28181 移动位置上报写入通道坐标与轨迹</li>
       </ul>
     </article>
 
@@ -176,6 +213,7 @@
         <li>集群：节点注册 / 心跳，设备按节点负载分配</li>
         <li>Casbin 统一权限策略，默认 admin / operator / viewer</li>
         <li>播放地址 HMAC 签名鉴权，支持来源白名单与 ZLM <code>on_play</code> 钩子校验</li>
+        <li>平台配置可运行时启停 GB28181 / EHOME / GB35114 信令，无需重启</li>
       </ul>
     </article>
   </div>
@@ -190,6 +228,7 @@
 
   <div class="arch">
     <figure class="arch-fig reveal" role="img" aria-label="EasyAVR 架构分层图：客户端层（Web / APP / 第三方 API）、开放层、视频资源中心与 AI 事件中心、三个业务平面、接入协议、可插拔存储">
+      <div class="dg-desktop" aria-hidden="true">
       <svg class="dg" viewBox="0 0 720 460" width="100%" role="presentation" focusable="false">
         <g class="dg-plain">
           <rect x="150" y="8" width="420" height="44" rx="10"/>
@@ -248,6 +287,52 @@
           <text class="dg-sub" x="266" y="418">SQLite（默认）· PostgreSQL / pgvector（可选）· 纯 Go 驱动</text>
         </g>
       </svg>
+      </div>
+      <div class="dg-mobile" role="presentation">
+        <div class="dv-blk dv-plain">
+          <p class="dv-t">客户端层</p>
+          <p class="dv-s">Web 端 · APP · 第三方 API</p>
+        </div>
+        <span class="dv-link"></span>
+        <div class="dv-blk dv-open">
+          <p class="dv-t">开放层</p>
+          <p class="dv-s">/api/v1 · JWT / API Key · 限流与审计</p>
+        </div>
+        <span class="dv-link"></span>
+        <div class="dv-2col">
+          <div class="dv-blk dv-center">
+            <p class="dv-t">视频资源中心</p>
+            <p class="dv-s">实时 · 录像 · 快照编目</p>
+          </div>
+          <div class="dv-blk dv-center">
+            <p class="dv-t">AI 事件中心</p>
+            <p class="dv-s">存储 · 检索 · 分发</p>
+          </div>
+        </div>
+        <span class="dv-link"></span>
+        <div class="dv-blk">
+          <p class="dv-t">设备接入平面</p>
+          <p class="dv-s">发现 · 导入 · 通道启停 · internal/device</p>
+        </div>
+        <div class="dv-blk">
+          <p class="dv-t">视频中台</p>
+          <p class="dv-s">流处理交给外置内核 · ZLMediaKit HTTP API · internal/video</p>
+        </div>
+        <div class="dv-blk dv-ai">
+          <p class="dv-t">AI 智能中台</p>
+          <p class="dv-s">Analyzer 统一抽象 · 抽帧 · 调度 · 模型管理 · internal/ai</p>
+        </div>
+        <span class="dv-link"></span>
+        <div class="dv-blk dv-plain">
+          <p class="dv-t">接入源与协议</p>
+          <p class="dv-s">GB28181 · RTSP · RTMP · ONVIF · 海康 ISAPI · EHOME/ISUP · VIID XML 入库</p>
+        </div>
+        <span class="dv-link"></span>
+        <div class="dv-blk dv-store">
+          <p class="dv-t">可插拔存储</p>
+          <p class="dv-s">SQLite（默认）· PostgreSQL / pgvector（可选）· 纯 Go 驱动</p>
+        </div>
+      </div>
       <figcaption class="fig-cap">各层与 Go 包的对应关系见下表</figcaption>
     </figure>
 
@@ -300,7 +385,7 @@
         <span class="step-no" aria-hidden="true">2</span>
         <h3>启动后端 API</h3>
       </div>
-      <p class="step-note">默认监听 :18000，内置 SQLite 零依赖启动；首次启动自动建管理员（easyavr / easyavr）。</p>
+      <p class="step-note">默认监听 :18000，内置 SQLite 零依赖启动；首次启动自动创建管理员账号，凭据由 <code>EASYAVR_ADMIN_USER</code> / <code>EASYAVR_ADMIN_PASS</code> 指定，部署前请修改默认值。</p>
       <div class="code">
         <div class="code-bar"><span>shell</span><button class="copy" type="button" data-copy>复制</button></div>
         <pre><code>make deps
@@ -410,8 +495,6 @@ curl -X POST -H "X-API-Key: 你的API密钥" \
     </div>
     <div class="foot-col">
       <h3>联系</h3>
-      <!-- TODO: GitHub 仓库地址确定后替换 href -->
-      <a href="#">GitHub 仓库（待补充）</a>
       <a href="mailto:avr@easyavr.cn">avr@easyavr.cn</a>
     </div>
   </div>

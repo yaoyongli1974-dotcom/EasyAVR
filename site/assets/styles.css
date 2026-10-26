@@ -8,7 +8,7 @@
   --border-strong: #2c3d4f;
   --text: #d7e1ec;
   --muted: #93a5b8;
-  --faint: #6b7d90;
+  --faint: #8595a8;
   --accent: #4ea3ff;
   --accent-strong: #6cb5ff;
   --accent-dim: rgba(78, 163, 255, 0.1);
@@ -124,18 +124,16 @@ a:hover { color: var(--accent); text-decoration: underline; text-underline-offse
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   background: none;
   border: 1px solid var(--border-strong);
   color: var(--text);
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 13px 14px;
   font: inherit;
-  font-size: 0.9rem;
   cursor: pointer;
 }
 .nav-toggle-box { display: inline-flex; flex-direction: column; gap: 3px; }
-.nav-toggle-box i { display: block; width: 16px; height: 1.5px; background: currentColor; }
+.nav-toggle-box i { display: block; width: 16px; height: 2px; background: currentColor; }
 
 /* 移动端展开的导航 */
 .nav.open {
@@ -204,7 +202,7 @@ a:hover { color: var(--accent); text-decoration: underline; text-underline-offse
 }
 .lead {
   margin: 0 0 26px;
-  max-width: 46em;
+  max-width: 38em;
   color: var(--muted);
   font-size: 1.02rem;
 }
@@ -258,6 +256,51 @@ a:hover { color: var(--accent); text-decoration: underline; text-underline-offse
   text-align: center;
   font-size: 0.8rem;
   color: var(--faint);
+}
+
+/* ---------- 窄屏 HTML 版分层图（≥641px 隐藏，SVG 版同规则互换） ---------- */
+.dg-mobile { display: none; }
+.dg-mobile .dv-blk {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px 14px;
+}
+.dg-mobile .dv-ai { border-color: var(--accent); background: var(--accent-dim); }
+.dg-mobile .dv-open { border-color: rgba(78, 163, 255, 0.55); background: #0f1a29; }
+.dg-mobile .dv-plain { background: var(--bg-soft); }
+.dg-mobile .dv-center, .dg-mobile .dv-store { background: var(--surface-2); }
+.dg-mobile .dv-t { margin: 0 0 2px; font-size: 0.9rem; font-weight: 650; color: var(--text); }
+.dg-mobile .dv-s { margin: 0; font-size: 0.8rem; line-height: 1.6; color: var(--muted); }
+.dg-mobile .dv-link {
+  display: block;
+  width: 1px;
+  height: 16px;
+  margin: 3px auto;
+  background: var(--border-strong);
+}
+.dg-mobile .dv-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ============================================================
+   窄屏 ≤640px
+   ============================================================ */
+@media (max-width: 640px) {
+  .topbar-in { gap: 10px; }
+  .brand { font-size: 1rem; }
+  .topbar-cta {
+    margin-left: auto;
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+  .nav-toggle { margin-left: 0; padding: 13px 12px; }
+  .nav-toggle-text { display: none; }
+
+  .code pre { padding: 12px 14px; }
+  .code code { font-size: 0.78rem; }
+
+  .dg-desktop { display: none; }
+  .dg-mobile { display: block; }
 }
 
 /* ---------- 分节 ---------- */
@@ -349,7 +392,7 @@ a:hover { color: var(--accent); text-decoration: underline; text-underline-offse
 }
 .arch-map dl > div:last-child { border-bottom: 0; }
 .arch-map dt { color: var(--text); font-weight: 600; }
-.arch-map dd { margin: 0; color: var(--muted); word-break: break-all; }
+.arch-map dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .arch-map dd code { background: none; border: 0; padding: 0; font-size: 0.95em; color: var(--faint); }
 
 /* ---------- 快速开始 ---------- */
