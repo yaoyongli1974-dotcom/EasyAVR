@@ -13,8 +13,8 @@ type TranscodeJob struct {
 	Text      string `gorm:"size:255" json:"text"`
 	Position  string `gorm:"size:16;default:top-left" json:"position"` // top-left | top-right | bottom-left | bottom-right
 	FontSize  int    `gorm:"default:24" json:"fontSize"`
-	Width     int    `json:"width"`  // 0 keeps source width
-	Height    int    `json:"height"` // 0 keeps source height
+	Width     int    `json:"width"`                       // 0 keeps source width
+	Height    int    `json:"height"`                      // 0 keeps source height
 	Bitrate   int    `gorm:"default:2000" json:"bitrate"` // kbps
 	Enabled   bool   `gorm:"default:true" json:"enabled"`
 	Status    string `gorm:"size:16;default:stopped" json:"status"` // stopped | running | failed
