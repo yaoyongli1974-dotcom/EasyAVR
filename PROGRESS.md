@@ -497,3 +497,89 @@
 - **验证通过**：实机全链路——ffmpeg 合成源 1280x720，转码+水印任务产生派生流（getMediaList 五协议齐全、totalBytes>0），抽帧确认水印渲染正确；录像 → 归档 MinIO → `archives?status=uploaded` → 重复归档去重；边缘用例（非法 mode 400、运行中 PUT 409）过。`go vet`、`go test ./...` 全绿；`cd web && npm run build`（vue-tsc + vite）零错误。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：真实摄像机接入复跑冒烟；国标级联自动填充；告警预案（报警类型→通知方式映射）；真机环境就绪后按聊天记录复测。
+
+### 2026-10-24（官网落地页事实复核 + 企业邮箱方案定型）
+- **已完成**：
+  - 复核 `site/` 交付（425 行 HTML / 607 行 CSS / 93 行 JS / README），零外部引用、广告法违禁词 0 命中、页脚为公司全称且无备案号、无表单，本地 `http.server` 全部 200、7 个 section 正常渲染。
+  - 对照代码修正两处事实错误：① 能力矩阵原写「ZLMediaKit 负责拉流、转码与多协议分发」——派生转码实为平台侧 ffmpeg 回推内核（AGENTS.md 明确禁止用 ZLM 容器内 ffmpeg），改为「外置内核承担拉流与多协议分发，平台经 HTTP API 编排」并新增「派生转码」条目；② 补上 `internal/archive` 云归档条目（README.md:132 早有该能力，落地页漏列）。
+  - 文案/安全：删掉页脚「GitHub 仓库（待补充）」死链（上线页留待补链接比没有更差，`site/README.md` 同步说明）；快速开始里的默认管理员口令 `easyavr/easyavr` 改为指向 `EASYAVR_ADMIN_USER`/`EASYAVR_ADMIN_PASS` 并提示部署前修改，公开页不宣传默认弱口令。
+  - 核实示例真实性：`/api/v1/open/devices`、`/api/v1/open/events`（payload 字段与 `server_test.go:129,1657` 一致）、OpenAPI `3.0.3`（`internal/openapi/spec.go:13`）、`make web-build` 目标均存在。
+  - 新增 `deploy/mail/README.md`：Zoho Mail Forever Free 全套 DNS 记录（验证 TXT / 3 条 MX / SPF / DKIM / DMARC）、前置条件（`.cn` 强制实名）、`dig` 验证命令、IMAP/SMTP 参数、免费版发信限额边界，以及「阿里企业邮箱免费版已不对新用户开放」的结论。
+- **当前状态**：待续（视觉复核进行中；邮箱 DNS 待用户添加后验证）
+- **下一步**：用户按 `deploy/mail/README.md` 添加 DNS 记录 → `dig` 验证 MX/SPF/DKIM/DMARC 生效 → 外部邮箱发测试信；视觉复核结论回来后修样式问题；截图占位待真实界面截图替换。
+
+### 2026-10-24（域名解析排查：卡在实名认证 + 部署索引补齐）
+- **已完成**：
+  - 排查 `easyavr.cn` 不解析：本机 `dig`、阿里 DoH、`223.5.5.5`、`114.114.114.114` 全部 NXDOMAIN，直连 `.cn` 权威 `a.dns.cn`（`flags: qr aa`）同样 NXDOMAIN → 注册局层面没有委派。
+  - CNNIC WHOIS（本机无 `whois` 命令，用 python socket 连 `whois.cnnic.cn:43`）确认真因：域名已注册（2026-10-24 16:33，阿里云/万网），NS 为 `dns9/dns10.hichina.com`（正确），但状态是 **`clientHold` + `pendingVerification`** —— `.cn` 实名认证未通过，注册局暂停发布解析。结论：不是解析配置问题，改 DNS 无用，必须在阿里云做实名认证（注册人为个人「姚永利」，只能先走个人实名；`.cn` 注册后 5 天内未实名会被注销）。后续若要归到公司主体需另外做过户+企业实名，过户会再次触发审核并可能短暂停解析。
+  - 新增 `deploy/README.md`：`deploy/` 下各文件索引 + 上线顺序（实名 → NS/A → 邮箱 DNS → TLS → 反代）+ 上线前安全红线（`/snapshots/*` 免鉴权、`/VIID/*` 与 `cluster/heartbeat` 在 JWT 外、默认管理员口令、demo 必须独立实例）。原本 `deploy/` 没有任何索引文档。
+- **当前状态**：阻塞（等域名实名认证通过；视觉复核第二轮进行中）
+- **下一步**：用户完成 `.cn` 实名 → 复跑 `dig easyavr.cn NS @a.dns.cn` 确认 clientHold 解除 → 验证 A 记录 → 按 `deploy/mail/README.md` 配 Zoho → certbot 上 TLS。
+
+### 2026-10-24（生产部署配置）
+- **已完成**：
+  - `deploy/nginx/easyavr.cn.conf`：`easyavr.cn`/`www` 80→301 + 443 静态站（root `/opt/easyavr/site`，HTML no-cache、`/assets/` 一年 immutable、gzip、安全头）；`app.easyavr.cn` 反代 `18000`，`^~ /live/`、`^~ /record/`、`^~ /index/api/webrtc` 反代 ZLM 回环 `8080`（`proxy_buffering off`，m3u8 走嵌套 location 加 no-cache）。`nginx -t` 实测通过。
+  - `deploy/systemd/easyavr.service`、`deploy/env.example`（键名逐项对齐 `config.go`，无自造变量；已确认监听变量是 `EASYAVR_LISTEN` 而非 `EASYAVR_ADDR`）。
+  - `docker-compose.prod.yml`：独立文件（不能做 override，端口会与底座 `80:80` 冲突）；ZLM HTTP 绑 `127.0.0.1:8080`、RTSP/RTMP 绑回环、`10000`、`30000-30500/udp`、**`8000/udp+tcp`**。
+  - `deploy/README.md` 追加生产章节（目录、7 步安装、防火墙、端口红线）。
+- **我复核后改掉的三处**：
+  1. WebRTC 原来根本播不了：compose 没发布 `8000`，且 `[rtc] externIP` 为空会通告容器内网 IP。已补端口 + 文档改为「改服务器上那份 config.ini 副本」。实测确认**该版本 ZLM 不做环境变量替换**（`externIP=$EXTERN_IP` 会原样保留），只能写死 IP。
+  2. 文档原称「WebRTC 需放通 UDP 49152-65535」——错的，`[rtc] port=8000` 是单端口复用，那 16k 个端口只在 `icePort`/旧 TURN 模式才用；按原文放通既没用又浪费。
+  3. `ProtectSystem=full` 只读 `/usr` `/boot` `/efi` `/etc`，**不含 `/opt`**；原文与单元注释都写错了，已改（`ReadWritePaths` 保留，切 `strict` 时仍需要）。
+- **当前状态**：待续（域名仍 `clientHold`；配置无法真实联调）
+- **下一步**：域名实名通过 → 按 `deploy/README.md` 7 步装 → certbot → 起 ZLM 并改 `externIP` → 验证 `/live/`、`/record/`、`/index/api/webrtc` 三条反代。
+
+### 2026-10-24（首次部署到 152.32.135.156，HTTP 阶段已对外）
+- **已完成**：后端、ZLM、官网、平台全部落地并验证，`easyavr.cn` / `app.easyavr.cn` 经 Host 头与 `--resolve` 外网自测 200。
+  - 后端：`CGO_ENABLED=0` 静态编译 → `/opt/easyavr/server/bin/easyavr`（默认构建会链本机 glibc，已避开）；systemd `easyavr.service` 起来，`127.0.0.1:18000`，登录 `code:0`，`systemInfo` 报 `zlmHealthy:true`。
+  - ZLM：`docker-compose.prod.yml` 起 `easyavr-zlm`，回环 8080/554/1935，对外 8000/udp、10000、30000-30500/udp。
+  - 官网：静态文件放 `/opt/1panel/www/sites/easyavr.cn/index`，vhost 放 `/opt/1panel/www/conf.d/easyavr.cn.conf`。
+  - 前端产物 `web/dist` 已重建并上传，后端直接托管。
+- **踩到的三个坑**（已写进 `deploy/README.md`）：
+  1. 这台机器 80/443 归 **1Panel 管理的 openresty**，不是裸 nginx；`nginx`/`certbot` 都没装。
+  2. 1Panel 真正生效的 vhost 目录是 `/opt/1panel/www/conf.d/`，`/opt/1panel/apps/openresty/openresty/conf/conf.d/` 是陈旧副本——第一次配置放错地方，reload 后完全不生效。
+  3. openresty 容器只挂 `/www` 与 `/opt/1panel/**`，**看不到 `/opt/easyavr`**，静态站必须放 `/www/sites/...`，否则全是 404。
+  - 另外宿主机 `8000/tcp` 被 geo-engine 的 Python 占用，ZLM 设 `[rtc] tcpPort=0`，WebRTC 只走 UDP；compose 里删掉 `8000:8000/tcp`。
+- **当前状态**：待续（HTTP 可用；HTTPS 与邮箱都卡在域名实名）
+- **下一步**：
+  1. 用户完成 `.cn` 实名（clientHold 解除）→ `dig easyavr.cn A @223.5.5.5` 确认解析。
+  2. 1Panel 申请三域名证书 → 按 `deploy/README.md` 的「切 HTTPS」六步改 vhost 与 `/etc/easyavr/env`（`MEDIA_SCHEME`/`ZLM_HTTP_PORT`/`ALLOW_ORIGIN`/`PLAY_WHITELIST`），重启后实测播放。
+  3. 配 Zoho MX（`deploy/mail/README.md`），并让用户改掉 `/root/easyavr-credentials.txt` 里的初始口令。
+  4. 磁盘只剩约 2.3G，长期录像/归档要外挂对象存储（`internal/archive`）。
+
+### 2026-10-24（稳定性加固）
+- **已完成**：在 152.32.135.156 上补齐运维面，全部实测。
+  - 资源：`journald` 加 `/etc/systemd/journald.conf.d/99-easyavr.conf`（`SystemMaxUse=200M`），vacuum 后从 399M 降到 78M；`apt-get clean` 再放 330M。新建 1G `/swapfile`（写进 `/etc/fstab`），`vm.swappiness=20`。
+  - 进程：`/etc/systemd/system/easyavr.service.d/overrides.conf` 里 `Restart=always`（原来是 `on-failure`，进程被 SIGKILL 后虽然也会拉起，但干净退出不会）、`RestartSec=5`、`MemoryHigh=1G`/`MemoryMax=1536M`、`Environment=GOMEMLIMIT=512MiB`——本机还跑 1Panel/MySQL/n8n，必须给平台加围栏。
+  - 防火墙：补 `8000/udp`、`10000/udp+tcp`、`30000:30500/udp`（原来只放了 80/443，媒体面在 ufw 上是关的）。
+  - 新增 `deploy/scripts/backup.sh`：python3 `sqlite3.backup()` 热备（**这台机器没有 `sqlite3` 命令**，且 WAL 下不能 cp）→ gzip → `/var/backups/easyavr/`，保留 7 份，同时备 `/etc/easyavr/env`；`flock` 防并发。
+  - 新增 `deploy/scripts/healthcheck.sh`：单元 + `/api/v1/healthz` 探测，连续 3 次失败才 `systemctl restart easyavr`，日志带根分区占用百分比。
+  - 新增 `deploy/cron.d/easyavr`（备份 03:30、探活每 5 分钟）与 `deploy/logrotate/easyavr`（weekly/4 份/压缩），已装到 `/etc/cron.d/` 与 `/etc/logrotate.d/`。cron 已实际触发（18:00:01 写出首行 ok）。
+- **验证**：
+  - 备份产物 gunzip 后 `integrity_check=ok`、`journal_mode=delete`、47 张表、`users` 1 行，与线上库一致（不是空壳备份）。
+  - 演练 ZLM 停机：`healthz` 仍 200、`systemInfo.zlmHealthy=false`、启动录制返回 502 而不是挂死；`docker start` 后自动恢复 `true`。
+  - 演练 `kill -9` 主进程：8 秒内被 systemd 拉起，`NRestarts=1`，`healthz` 200。
+- **当前状态**：待续
+- **风险与下一步**：
+  1. **磁盘 90%（剩 1.9G）是最大隐患**：`/var/lib` 8.9G（MySQL 等他人服务）、docker 镜像 8.7G（全部在用，无可回收）。录像与快照会直接吃这块盘。
+  2. **快照没有保留策略**：`internal/snapshot` 只支持手动删除，`StartScheduler` 定时抓图会无限增长；开启定时抓图前应先加按天清理（`internal/recording.Cleanup` 有现成模式可抄）。
+  3. `n8n` 容器重启策略是 `on-failure`，宿主机重启后可能起不来（属于他人服务，未改）。因此**没有做重启演练**。
+  4. 若云厂商有安全组，`8000/udp`、`10000`、`30000-30500/udp` 还需在控制台放通；ufw 只挡宿主机一层。
+  5. HTTPS 仍卡域名实名。
+
+### 2026-10-26（本地演示：真机全链路打通 + 修复 4 个前端缺陷）
+- **背景**：用户要求本地演示。开发库原本 0 设备 0 通道，用 ffmpeg 合成 4 路 RTSP 源推入本机 ZLM 冒充摄像机，全部操作走平台 API，暴露并修复了 4 个真实前端缺陷。
+- **已完成（缺陷修复）**：
+  1. **电子地图整页失效**（`web/src/views/Map.vue`）：`attachDevices` 递归到设备叶子节点时访问不存在的 `.children` → TypeError 被 try/catch 吞掉，表现为「加载设备失败」+ 设备树空白 + 无标记。改为**先递归子分组、再挂设备叶子**，并新增「未分组」虚拟节点收纳 `groupId=0`/未知分组的设备。
+  2. **WebRTC 完全不可播**（`web/src/components/VideoPlayer.vue`）：新版 ZLM 的 `/index/api/webrtc` 返回 JSON `{"code":0,"sdp":"v=0..."}`，代码把原始 body 直接交给 `setRemoteDescription` → `Failed to parse SessionDescription`。改为检测 `{` 开头则 JSON 解析并校验 `code===0 && sdp`，另加 `sdp.startsWith('v=')` 兜底。
+  3. **多屏播放 4 路全黑**（同一文件）：`reload()` 在 setup 阶段执行时模板 ref 尚未绑定（`videoEl` 为 null），且只有 `watch(props.urls)`，多屏页带着已有 URL 挂载时永不播放。改为 `onMounted(reload)`。
+  4. **总览统计全是 `/`**（`web/src/views/Dashboard.vue`）：`systemInfo` 实际结构是 `planes.deviceAccess.{devices,channels}` / `planes.ai.{providers,tasks,events}`，页面却读扁平字段。改为 computed 展平嵌套结构。
+  5. **活跃流虚高**（`server/internal/server/handler_video.go`）：`activeStreams` 统计原始 `getMediaList` 行，每路流按 schema 重复计数（5 路显示 58）。改用 `video.SummarizeStreams` 计数。
+- **已完成（分组一致性，带测试）**：`deviceRequest.GroupID` 改 `*uint`；`createDevice`/`updateDevice` 与 `bindDevicesToGroup`/`unbindDevicesFromGroup` 双向同步 `devices.group_id` 与 `device_group_devices` 关联表（此前只写关联表，地图按 `groupId` 取数取不到）。新增 `TestDeviceGroupMirror`。
+- **已完成（演示环境）**：4 路 ffmpeg 循环推送 `live/demo1..4`（testsrc2 / smptebars / life / mandelbrot，1280x720）；演示分组「演示分组 · 西安」+ 设备「演示-合成摄像机」+ 通道 1–4（含 GPS）；通道 9 录制 15s 生成可回放录像（7.9 MB）；`POST /ai/tasks/:id/run` 配合 `examples/cv-worker/cv_worker.py`（:9099）跑通真实 AI 闭环（ffmpeg 抽帧 44 KB → CV worker → 事件入库）。
+- **验证通过**：`go test ./...` 全绿（server 8.3s）、`go vet`、`cd web && npm run build`（vue-tsc + vite）；截取 8 张页面截图交 observer 复核，三个历史缺陷（总览 `/`、多屏全黑、地图无标记）均已确认修复，其余页面数据正确。
+- **当前状态**：完成（改动尚未提交）
+- **下一步**：
+  1. 提交本批（前端 4 处修复 + 后端分组一致性 + `EASYAVR_MEDIA_SCHEME` + `deploy/` 未入库文件 + site 响应式改版）。
+  2. 域名实名 → HTTPS（`MEDIA_SCHEME=https`）→ Zoho 邮箱。
+  3. 快照保留策略、生产磁盘余量（90%）仍是开定时抓图前的前置条件。
