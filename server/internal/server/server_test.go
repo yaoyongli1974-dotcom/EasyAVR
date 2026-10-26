@@ -2421,3 +2421,94 @@ func TestPlatformConfigGB35114Listen(t *testing.T) {
 		t.Fatalf("listen not persisted: %s", cfg.Data)
 	}
 }
+
+// TestDeviceGroupMirror keeps devices.group_id (read by the map tree and the
+// device list) in step with the device_group_devices join table (read by group
+// access checks): bind/unbind and PUT /devices/:id must both update it.
+func TestDeviceGroupMirror(t *testing.T) {
+	srv, _ := newTestServer(t)
+	admin := login(t, srv.URL)
+	B := srv.URL + "/api/v1"
+
+	var resp apiResp
+	doJSON(t, http.MethodPost, B+"/groups", admin, map[string]any{"name": "Mirror G"}, &resp)
+	var g1, g2 struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(resp.Data, &g1)
+	doJSON(t, http.MethodPost, B+"/groups", admin, map[string]any{"name": "Mirror G2"}, &resp)
+	json.Unmarshal(resp.Data, &g2)
+
+	doJSON(t, http.MethodPost, B+"/devices", admin,
+		map[string]any{"name": "mirror-cam", "protocol": "rtsp", "ip": "10.9.9.9"}, &resp)
+	var dev struct {
+		ID      uint `json:"id"`
+		GroupID uint `json:"groupId"`
+	}
+	json.Unmarshal(resp.Data, &dev)
+
+	groupID := func() uint {
+		var r apiResp
+		doJSON(t, http.MethodGet, fmt.Sprintf("%s/devices/%d", B, dev.ID), admin, nil, &r)
+		var row struct {
+			GroupID uint `json:"groupId"`
+		}
+		json.Unmarshal(r.Data, &row)
+		return row.GroupID
+	}
+
+	doJSON(t, http.MethodPost, B+"/groups/devices/bind", admin,
+		map[string]any{"groupId": g1.ID, "deviceIds": []uint{dev.ID}}, &resp)
+	if got := groupID(); got != g1.ID {
+		t.Fatalf("bind should mirror group_id, got %d want %d", got, g1.ID)
+	}
+
+	doJSON(t, http.MethodPut, fmt.Sprintf("%s/devices/%d", B, dev.ID), admin,
+		map[string]any{"groupId": g2.ID}, &resp)
+	if got := groupID(); got != g2.ID {
+		t.Fatalf("PUT should move device to group %d, got %d", g2.ID, got)
+	}
+	var listResp apiResp
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/groups/%d/devices", B, g2.ID), admin, nil, &listResp)
+	var inNew []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(listResp.Data, &inNew)
+	if len(inNew) != 1 || inNew[0].ID != dev.ID {
+		t.Fatalf("moved device missing from new group: %+v", inNew)
+	}
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/groups/%d/devices", B, g1.ID), admin, nil, &listResp)
+	var inOld []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(listResp.Data, &inOld)
+	if len(inOld) != 0 {
+		t.Fatalf("device still bound to old group: %+v", inOld)
+	}
+
+	doJSON(t, http.MethodPost, B+"/groups/devices/unbind", admin,
+		map[string]any{"groupId": g2.ID, "deviceIds": []uint{dev.ID}}, &resp)
+	if got := groupID(); got != 0 {
+		t.Fatalf("unbind should clear group_id, got %d", got)
+	}
+
+	// A device created with a groupId lands in both stores immediately.
+	doJSON(t, http.MethodPost, B+"/devices", admin,
+		map[string]any{"name": "mirror-cam-2", "protocol": "rtsp", "ip": "10.9.9.10", "groupId": g1.ID}, &resp)
+	var dev2 struct {
+		ID      uint `json:"id"`
+		GroupID uint `json:"groupId"`
+	}
+	json.Unmarshal(resp.Data, &dev2)
+	if dev2.GroupID != g1.ID {
+		t.Fatalf("create with groupId not applied: %+v", dev2)
+	}
+	doJSON(t, http.MethodGet, fmt.Sprintf("%s/groups/%d/devices", B, g1.ID), admin, nil, &listResp)
+	var created []struct {
+		ID uint `json:"id"`
+	}
+	json.Unmarshal(listResp.Data, &created)
+	if len(created) != 1 || created[0].ID != dev2.ID {
+		t.Fatalf("created device missing from group binding table: %+v", created)
+	}
+}

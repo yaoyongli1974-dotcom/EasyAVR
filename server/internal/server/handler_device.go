@@ -20,7 +20,7 @@ type deviceRequest struct {
 	Port         int    `json:"port"`
 	Username     string `json:"username"`
 	Password     string `json:"password"`
-	GroupID      uint   `json:"groupId"`
+	GroupID      *uint  `json:"groupId"`
 	NodeID       string `json:"nodeId"`
 }
 
@@ -70,8 +70,11 @@ func (a *App) createDevice(c *gin.Context) {
 	dev := model.Device{
 		Name: req.Name, Protocol: req.Protocol, AccessMode: req.AccessMode,
 		Manufacturer: req.Manufacturer, IP: req.IP, Port: req.Port,
-		Username: req.Username, Password: req.Password, GroupID: req.GroupID,
+		Username: req.Username, Password: req.Password,
 		Status: "offline",
+	}
+	if req.GroupID != nil {
+		dev.GroupID = *req.GroupID
 	}
 	if req.NodeID != "" {
 		dev.NodeID = req.NodeID
@@ -81,6 +84,9 @@ func (a *App) createDevice(c *gin.Context) {
 	if err := a.db.Create(&dev).Error; err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if dev.GroupID != 0 {
+		a.db.Create(&model.DeviceGroupDevice{DeviceID: dev.ID, GroupID: dev.GroupID})
 	}
 	// Auto-create a main channel so the device is immediately streamable.
 	ch := model.Channel{
@@ -148,9 +154,20 @@ func (a *App) updateDevice(c *gin.Context) {
 	if req.NodeID != "" {
 		updates["node_id"] = req.NodeID
 	}
+	if req.GroupID != nil {
+		updates["group_id"] = *req.GroupID
+	}
 	if err := a.db.Model(&dev).Updates(updates).Error; err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Keep the binding table in step: group access checks read it, the map tree
+	// reads devices.group_id.
+	if req.GroupID != nil {
+		a.db.Where("device_id = ?", id).Delete(&model.DeviceGroupDevice{})
+		if *req.GroupID != 0 {
+			a.db.Create(&model.DeviceGroupDevice{DeviceID: id, GroupID: *req.GroupID})
+		}
 	}
 	a.db.Preload("Channels").First(&dev, id)
 	ok(c, dev)

@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/easyavr/easyavr/internal/model"
+	"github.com/easyavr/easyavr/internal/video"
 )
 
 // listVideoResources returns catalog entries from the Video Resource Center.
@@ -38,7 +39,8 @@ func (a *App) videoStats(c *gin.Context) {
 	active := 0
 	zlmHealthy := false
 	if streams, err := a.zlm.MediaList(); err == nil {
-		active = len(streams)
+		// One logical stream shows up once per protocol schema (hls/rtsp/...).
+		active = len(video.SummarizeStreams(streams))
 		zlmHealthy = true
 	}
 	ok(c, gin.H{

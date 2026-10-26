@@ -185,6 +185,9 @@ func (a *App) bindDevicesToGroup(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Mirror the binding onto devices.group_id: the map tree and the device list
+	// read that column, while access checks read the join table.
+	a.db.Model(&model.Device{}).Where("id IN ?", req.DeviceIDs).Update("group_id", req.GroupID)
 	ok(c, gin.H{"count": len(bindings)})
 }
 
@@ -195,6 +198,7 @@ func (a *App) unbindDevicesFromGroup(c *gin.Context) {
 		return
 	}
 	a.db.Where("group_id = ? AND device_id IN ?", req.GroupID, req.DeviceIDs).Delete(&model.DeviceGroupDevice{})
+	a.db.Model(&model.Device{}).Where("group_id = ? AND id IN ?", req.GroupID, req.DeviceIDs).Update("group_id", 0)
 	ok(c, gin.H{"groupId": req.GroupID})
 }
 
