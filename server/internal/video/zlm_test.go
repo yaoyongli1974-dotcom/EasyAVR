@@ -63,6 +63,31 @@ func TestRecordURL(t *testing.T) {
 	}
 }
 
+// Player URLs must follow the page scheme: an https page cannot load http
+// media, so a TLS-fronted deployment points the platform at https + 443 and
+// proxies those paths back to the plain-http media daemon.
+func TestPlayURLsScheme(t *testing.T) {
+	c := NewClient("http://127.0.0.1:8080", "s", "app.example.com", 443, 443, 554, 1935)
+	c.Scheme = "https"
+	urls := c.PlayURLs("ch_x")
+	for _, proto := range []string{"hls", "http-flv", "http-fmp4", "webrtc"} {
+		if !strings.HasPrefix(urls[proto], "https://app.example.com/") {
+			t.Errorf("%s = %q, want https on the default port", proto, urls[proto])
+		}
+	}
+	if urls["rtsp"] != "rtsp://app.example.com:554/live/ch_x" {
+		t.Errorf("rtsp = %q", urls["rtsp"])
+	}
+	if got := c.RecordURL("ch_x", "2026-10-24", "a.mp4"); got != "https://app.example.com/record/live/ch_x/2026-10-24/a.mp4" {
+		t.Errorf("RecordURL = %q", got)
+	}
+
+	plain := NewClient("http://127.0.0.1:80", "s", "127.0.0.1", 80, 80, 554, 1935)
+	if got := plain.PlayURLs("ch_x")["hls"]; got != "http://127.0.0.1/live/ch_x/hls.m3u8" {
+		t.Errorf("default scheme hls = %q", got)
+	}
+}
+
 // DeleteRecordDir is POST-only on this ZLM build; the client must use the form
 // endpoint and surface 404 as an error (the endpoint name differs across
 // ZLM releases, and a silent no-op would leave media files behind).

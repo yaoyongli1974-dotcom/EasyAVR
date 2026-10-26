@@ -75,6 +75,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 | `EASYAVR_ZLM_API` | `http://127.0.0.1:80` | ZLMediaKit HTTP API |
 | `EASYAVR_ZLM_SECRET` | `EasyAVRzlmSecret2024x` | ZLM API secret（`docker-compose.yml` 已通过 `deploy/zlm/config.ini` 固定为同值） |
 | `EASYAVR_MEDIA_HOST` | `127.0.0.1` | 浏览器可访问的媒体主机 |
+| `EASYAVR_MEDIA_SCHEME` | `http` | 播放地址协议；页面走 HTTPS 时设为 `https`，并让 nginx 把 `/live`、`/record`、`/index/api/webrtc` 反代到 ZLM |
 | `EASYAVR_WEB_DIST` | `../web/dist` | 静态前端目录 |
 | `EASYAVR_SNAPSHOT_DIR` | `./data/snapshots` | 快照存储目录 |
 | `EASYAVR_MONITOR_SEC` | `0` | 后台流量/状态采样周期（秒），0 关闭 |

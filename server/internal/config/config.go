@@ -98,13 +98,14 @@ type GBConfig struct {
 
 // ZLMConfig points at the ZLMediaKit HTTP API and derived media endpoints.
 type ZLMConfig struct {
-	APIBase   string // e.g. http://127.0.0.1:80
-	Secret    string // ZLM api secret (config.ini general.secret)
-	MediaHost string // host reachable by browsers, e.g. 127.0.0.1
-	RTSPPort  int
-	RTMPPort  int
-	HTTPPort  int
-	WSPort    int
+	APIBase     string // e.g. http://127.0.0.1:80
+	Secret      string // ZLM api secret (config.ini general.secret)
+	MediaHost   string // host reachable by browsers, e.g. 127.0.0.1
+	MediaScheme string // http or https; browsers need https when the page is https
+	RTSPPort    int
+	RTMPPort    int
+	HTTPPort    int
+	WSPort      int
 }
 
 func Load() *Config {
@@ -169,13 +170,14 @@ func Load() *Config {
 			Whitelist:   envList("EASYAVR_PLAY_WHITELIST"),
 		},
 		ZLM: ZLMConfig{
-			APIBase:   strings.TrimRight(env("EASYAVR_ZLM_API", "http://127.0.0.1:80"), "/"),
-			Secret:    env("EASYAVR_ZLM_SECRET", "EasyAVRzlmSecret2024x"),
-			MediaHost: env("EASYAVR_MEDIA_HOST", "127.0.0.1"),
-			RTSPPort:  envInt("EASYAVR_ZLM_RTSP_PORT", 554),
-			RTMPPort:  envInt("EASYAVR_ZLM_RTMP_PORT", 1935),
-			HTTPPort:  envInt("EASYAVR_ZLM_HTTP_PORT", 80),
-			WSPort:    envInt("EASYAVR_ZLM_WS_PORT", 80),
+			APIBase:     strings.TrimRight(env("EASYAVR_ZLM_API", "http://127.0.0.1:80"), "/"),
+			Secret:      env("EASYAVR_ZLM_SECRET", "EasyAVRzlmSecret2024x"),
+			MediaHost:   env("EASYAVR_MEDIA_HOST", "127.0.0.1"),
+			MediaScheme: env("EASYAVR_MEDIA_SCHEME", "http"),
+			RTSPPort:    envInt("EASYAVR_ZLM_RTSP_PORT", 554),
+			RTMPPort:    envInt("EASYAVR_ZLM_RTMP_PORT", 1935),
+			HTTPPort:    envInt("EASYAVR_ZLM_HTTP_PORT", 80),
+			WSPort:      envInt("EASYAVR_ZLM_WS_PORT", 80),
 		},
 	}
 }

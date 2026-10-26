@@ -70,6 +70,7 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 		cfg.ZLM.APIBase, cfg.ZLM.Secret, cfg.ZLM.MediaHost,
 		cfg.ZLM.HTTPPort, cfg.ZLM.WSPort, cfg.ZLM.RTSPPort, cfg.ZLM.RTMPPort,
 	)
+	zlm.Scheme = cfg.ZLM.MediaScheme
 	notifySvc := notify.NewService(db)
 	searchSvc := search.NewService(db, cfg.PGVector)
 	sink := &eventSink{search: searchSvc, notify: notifySvc}

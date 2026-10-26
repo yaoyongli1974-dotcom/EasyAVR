@@ -24,10 +24,14 @@ type Client struct {
 	http    *http.Client
 	// Public endpoint info used to build browser/player URLs.
 	MediaHost string
-	HTTPPort  int
-	WSPort    int
-	RTSPPort  int
-	RTMPPort  int
+	// Scheme for the HTTP-family player URLs. Browsers block http media on an
+	// https page, so a TLS-terminating deployment sets this to "https" and
+	// proxies /live, /record and /index/api/webrtc back to the media daemon.
+	Scheme   string
+	HTTPPort int
+	WSPort   int
+	RTSPPort int
+	RTMPPort int
 }
 
 func NewClient(apiBase, secret, mediaHost string, httpPort, wsPort, rtspPort, rtmpPort int) *Client {
@@ -306,7 +310,14 @@ func (c *Client) portURL(scheme, path string, port int) string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	if port == 80 && scheme == "http" || port == 443 && scheme == "https" {
+	defaultPort := 80
+	if scheme == "http" && c.Scheme == "https" {
+		scheme = "https"
+	}
+	if scheme == "https" {
+		defaultPort = 443
+	}
+	if port == defaultPort {
 		return fmt.Sprintf("%s://%s%s", scheme, host, path)
 	}
 	return fmt.Sprintf("%s%s:%d%s", scheme+"://", host, port, path)
