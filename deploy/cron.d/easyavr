@@ -1,0 +1,13 @@
+# /etc/cron.d/easyavr -- EasyAVR 定时备份与健康检查
+#
+# 安装：cp deploy/cron.d/easyavr /etc/cron.d/easyavr && chmod 0644 /etc/cron.d/easyavr
+# 注意 /etc/cron.d 的格式：每条任务第 6 个字段是用户，文件属主须为 root 且不可组/其他可写。
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# 每天 03:30 热备份 SQLite + /etc/easyavr/env，保留 7 份
+30 3 * * * root /opt/easyavr/deploy/scripts/backup.sh >> /var/log/easyavr-backup.log 2>&1
+
+# 每 5 分钟检查 systemd 单元与 /api/v1/healthz，连续失败 3 次自动重启
+*/5 * * * * root /opt/easyavr/deploy/scripts/healthcheck.sh >> /var/log/easyavr-health.log 2>&1

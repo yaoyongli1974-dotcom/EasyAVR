@@ -1,0 +1,58 @@
+# EasyAVR 生产部署（独立 compose 文件，不是 docker-compose.yml 的 override）
+#
+# 用法：
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f zlm
+#
+# 为什么不用 override：override 会和底座的 ports 合并，宿主机 80 会同时被底座
+# 的 "80:80" 和本文件抢，docker 直接报端口冲突。底座 docker-compose.yml 保持
+# 开发用的端口映射不动（make run 依赖它），生产只认这个文件。
+#
+# 端口分工：
+#   127.0.0.1:8080  ZLM HTTP（容器内 80），只给 nginx 反代，宿主机 80 归 nginx
+#   127.0.0.1:554   RTSP，只给宿主机上的 ffmpeg（抓帧/转码）用
+#   127.0.0.1:1935  RTMP，只给宿主机上的 ffmpeg 推流用
+#   10000 udp+tcp   GB28181 收流
+#   30000-30500 udp GB28181 设备推流（必须对外）
+#   8000 udp+tcp    WebRTC 媒体（STUN/DTLS/SRTP 单端口，所有 RTC 客户端共用）
+#
+# WebRTC 还有一个配置项必须手工改一次，改的是服务器上那份 config.ini 副本，
+# 不是仓库里的文件（rsync 到 /opt/easyavr/deploy/ 之后改，不产生仓库漂移）：
+#   deploy/zlm/config.ini 里 [rtc] 的 externIP=
+#     → externIP=152.32.135.156
+# 不配的话 ZLM 通告给浏览器的候选地址是容器内网 IP（172.x），公网播不了。
+# 注意这个版本的 ZLM 不认 $EXTERN_IP 之类的环境变量占位（实测会原样保留，
+# 见 getServerConfig 返回的 rtc.externIP），必须写死 IP。
+# 另外 [rtc] port=8000 / tcpPort=8000 是"单端口复用"，不需要放通 port_range
+# 那一大段 49152-65535。
+# 若宿主机 8000/tcp 已被别的服务占用（例如同机的其他 API 进程），把 [rtc] tcpPort
+# 设为 0，只保留 UDP 这条主路径，并把下面的 "8000:8000/tcp" 删掉；要保留 TCP 兜底
+# 就统一改成另一个端口（tcpPort 与端口映射必须同号，否则通告的候选地址不可达）。
+#
+# GB28181 端口范围：config.ini 的 [rtp_proxy] port_range 是 30000-35000，
+# 这里只发布到 30500（约 250 路并发）。要超过就把下面的区间和防火墙一起放宽。
+
+services:
+  zlm:
+    image: zlmediakit/zlmediakit:master
+    # container_name 固定，便于日志、运维脚本和后端文档里引用同一个名字。
+    # 固定后同一台机器只能跑一个实例，需要多实例时改名。
+    container_name: easyavr-zlm
+    restart: unless-stopped
+    volumes:
+      # 固定 secret 的配置，profile 与底座一致；secret 必须与 EASYAVR_ZLM_SECRET 相同。
+      - ./deploy/zlm/config.ini:/opt/media/conf/config.ini
+    ports:
+      # HTTP 只绑回环：nginx 反代 /live/、/record/、/index/api/webrtc 到这里。
+      - "127.0.0.1:8080:80"
+      # RTSP/RTMP 只给本机进程用（转码、抓帧），不对外暴露。
+      - "127.0.0.1:554:554"
+      - "127.0.0.1:1935:1935"
+      # GB28181 设备推流，必须对外可达。
+      - "10000:10000/udp"
+      - "10000:10000/tcp"
+      - "30000-30500:30000-30500/udp"
+      # WebRTC 媒体端口：/index/api/webrtc 只做信令，音视频走这里。
+      # 只发布 UDP：本机 8000/tcp 已被其他服务占用（geo-engine API），[rtc] tcpPort
+      # 在服务器那份 config.ini 里设为 0。需要 TCP 兜底时改成 8100 并同步 tcpPort。
+      - "8000:8000/udp"

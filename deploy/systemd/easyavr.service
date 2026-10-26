@@ -1,0 +1,46 @@
+# EasyAVR 平台主进程（systemd）
+#
+# 安装：
+#   install -m 0644 /opt/easyavr/deploy/systemd/easyavr.service /etc/systemd/system/easyavr.service
+#   systemctl daemon-reload && systemctl enable --now easyavr
+#
+# 依赖假设：
+#   /opt/easyavr/server/bin/easyavr   由 `make build` 产出的二进制
+#   /opt/easyavr/server/data/         SQLite 库、快照、GB35114 证书等运行期数据
+#   /opt/easyavr/web/dist             前端产物（后端直接托管）
+#   /etc/easyavr/env                  环境变量文件，见 deploy/env.example
+
+[Unit]
+Description=EasyAVR platform API (video / AI resource platform)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=easyavr
+Group=easyavr
+
+# 必须是 server/ 目录：EASYAVR_DB 默认 ./data/easyavr.db、
+# EASYAVR_WEB_DIST 默认 ../web/dist，都是相对工作目录解析的。
+WorkingDirectory=/opt/easyavr/server
+
+# 不带 "-" 前缀：文件缺失或不可读时启动直接失败，避免用默认密钥/默认管理员跑起来。
+EnvironmentFile=/etc/easyavr/env
+
+ExecStart=/opt/easyavr/server/bin/easyavr
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+# ProtectSystem=full 把 /usr、/boot、/efi、/etc 挂成只读（不涉及 /opt）。
+# 平台的运行期写入全部在 server/data/ 下（SQLite 的 .db/.db-wal/.db-shm、快照、
+# GB35114 证书），显式放开这个目录，切到 ProtectSystem=strict 时也不会因为
+# "attempt to write a readonly database" 起不来。
+ProtectSystem=full
+ReadWritePaths=/opt/easyavr/server/data
+
+[Install]
+WantedBy=multi-user.target

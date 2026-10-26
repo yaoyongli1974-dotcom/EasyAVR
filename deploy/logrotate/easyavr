@@ -1,0 +1,16 @@
+# /etc/logrotate.d/easyavr —— 切割 cron 追加的两个运维日志
+#
+# 安装：install -m 0644 deploy/logrotate/easyavr /etc/logrotate.d/easyavr
+# 验证：logrotate -d /etc/logrotate.d/easyavr
+#
+# 健康检查每 5 分钟写一行（约 100 行/天），备份每天 4~5 行，一年不到 200KB；
+# 这里仍然切割，是为了防止有人把 healthcheck 改成更频繁或加详细输出后无声膨胀。
+/var/log/easyavr-backup.log /var/log/easyavr-health.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+}
