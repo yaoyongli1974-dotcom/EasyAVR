@@ -181,8 +181,8 @@ func TestRunnerTaskTimeout(t *testing.T) {
 		return len(runs) > 0 && runs[0].FinishedAt != nil
 	})
 	run := runsFor(t, db, taskID)[0]
-	if run.Status != RunFailed || run.ErrorCode != string(ErrorProviderTimeout) {
-		t.Fatalf("run = %+v, want failed/provider_timeout", run)
+	if run.Status != RunTimeout || run.ErrorCode != string(ErrorProviderTimeout) || run.FinishedAt == nil {
+		t.Fatalf("run = %+v, want timeout/provider_timeout with a finish time", run)
 	}
 	var task model.AITask
 	db.First(&task, taskID)
@@ -316,9 +316,10 @@ func TestRunnerRetryAndClassification(t *testing.T) {
 		}
 		waitFor(t, 3*time.Second, func() bool {
 			runs := runsFor(t, db, taskID)
-			return len(runs) > 0 && runs[0].Status == RunSucceeded
+			return len(runs) > 0 && runs[len(runs)-1].Status == RunSucceeded
 		})
-		run := runsFor(t, db, taskID)[0]
+		runs := runsFor(t, db, taskID)
+		run := runs[len(runs)-1]
 		if got := analyzer.callCount(); got != 3 {
 			t.Fatalf("analyzer calls = %d, want 3 (1 + 2 retries)", got)
 		}

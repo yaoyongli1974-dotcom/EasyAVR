@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -64,6 +65,10 @@ const (
 	RunFailed    = "failed"
 	RunStopped   = "stopped"
 	RunSucceeded = "succeeded"
+	// RunTimeout is a terminal run status: the attempt hit TaskTimeout (or the
+	// provider reported a deadline) and produced no findings. Recovery must not
+	// treat it as a leftover from a crashed process.
+	RunTimeout = "timeout"
 )
 
 // nonTerminalRunStatuses are cleared by Recover (leftovers from a crash).
@@ -79,6 +84,11 @@ type runnerState struct {
 	id     uint
 	cancel context.CancelFunc
 	done   chan struct{}
+	// started is closed once the pre-launch DB work has succeeded or failed.
+	// A concurrent Start waits on it instead of returning nil for an instance
+	// that never actually launched.
+	started chan struct{}
+	initErr error // written before started is closed, read after it is closed
 }
 
 // Runner executes AI tasks and writes findings into the AI Event Center.
@@ -96,6 +106,13 @@ type Runner struct {
 	optMu            sync.RWMutex
 	opts             RunnerOptions
 	taskHasErrorCols bool
+
+	// Persistence failures are surfaced as alerts/counters instead of being
+	// silently logged and forgotten. They are safe for tests and health checks
+	// to observe without exposing task prompts or provider credentials.
+	runCreateFailures  int64
+	runUpdateFailures  int64
+	taskStatusFailures int64
 
 	workerID string
 
@@ -196,33 +213,57 @@ func (r *Runner) SetFrameGrabber(fn func(context.Context, string) ([]byte, error
 // Start begins periodic execution of a task until Stop is called. It is
 // idempotent: a task never has two live execution loops. DB work is performed
 // outside the lock so a slow database cannot block Stop/Close/other Starts.
+// If any pre-launch DB step fails, no goroutine is launched and every resource
+// reserved by this call (context, registered state) is released before the
+// error is returned.
 func (r *Runner) Start(taskID uint) error {
 	r.mu.Lock()
 	if existing, ok := r.tasks[taskID]; ok {
 		select {
 		case <-existing.done: // stale entry from a loop that just exited
+			delete(r.tasks, taskID)
 		default:
 			r.mu.Unlock()
-			return nil
+			// The first caller owns the launch. Wait for its DB work so a
+			// concurrent Start never reports success for a failed launch.
+			<-existing.started
+			return existing.initErr
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	state := &runnerState{id: taskID, cancel: cancel, done: make(chan struct{})}
+	state := &runnerState{
+		id: taskID, cancel: cancel,
+		done: make(chan struct{}), started: make(chan struct{}),
+	}
 	r.tasks[taskID] = state
 	r.mu.Unlock()
 
 	var task model.AITask
+	var initErr error
 	if err := r.db.First(&task, taskID).Error; err != nil {
-		cancel()
-		r.dropState(state)
-		return err
+		initErr = fmt.Errorf("ai task_id=%d load failed: %w", taskID, err)
 	}
 	// Keep the historical side effect of Start: starting a task also marks it
 	// enabled in the UI. Recovery never relies on enabled to decide what to run.
-	if err := r.db.Model(&model.AITask{}).Where("id = ?", taskID).
-		Updates(map[string]any{"status": "running", "enabled": true}).Error; err != nil {
-		log.Printf("[ai] task_id=%d start status update failed: %v", taskID, err)
+	if initErr == nil {
+		if err := r.db.Model(&model.AITask{}).Where("id = ?", taskID).
+			Updates(map[string]any{"status": "running", "enabled": true}).Error; err != nil {
+			initErr = fmt.Errorf("ai task_id=%d running status update failed: %w", taskID, err)
+		}
 	}
+
+	if initErr != nil {
+		state.initErr = initErr
+		close(state.started)
+		cancel()
+		// Close done as well: a concurrent Stop must not wait five seconds for
+		// a loop that was never launched.
+		close(state.done)
+		r.dropState(state)
+		log.Printf("[ai] ALERT task_id=%d start aborted, no execution launched: %v", taskID, initErr)
+		return initErr
+	}
+	close(state.started)
 	go func() {
 		defer close(state.done)
 		defer r.dropState(state)
@@ -425,23 +466,44 @@ func (r *Runner) channelSem(channelID uint) *semaphore {
 	return sem
 }
 
-// updateRun writes run fields with a structured log on failure. Values are
-// limited to IDs/codes; no prompt, key or payload is ever logged.
-func (r *Runner) updateRun(runID uint, fields map[string]any) {
-	if err := r.db.Model(&model.AITaskRun{}).Where("id = ?", runID).Updates(fields).Error; err != nil {
-		log.Printf("[ai] run_id=%d update failed: %v", runID, err)
+// updateRun writes run fields. Failures are returned, counted and logged as
+// alerts so a dropped status transition is never silent. Values are limited to
+// IDs/codes; no prompt, key or payload is ever logged.
+func (r *Runner) updateRun(runID uint, fields map[string]any) error {
+	if runID == 0 {
+		return nil
 	}
+	if err := r.db.Model(&model.AITaskRun{}).Where("id = ?", runID).Updates(fields).Error; err != nil {
+		atomic.AddInt64(&r.runUpdateFailures, 1)
+		log.Printf("[ai] ALERT run_id=%d update failed fields=%v: %v", runID, fields, err)
+		return err
+	}
+	return nil
 }
 
-func (r *Runner) setTaskStatus(taskID uint, status, errCode, errMsg string) {
+// RunCreateFailures reports how many run records could not be persisted.
+func (r *Runner) RunCreateFailures() int64 { return atomic.LoadInt64(&r.runCreateFailures) }
+
+// RunUpdateFailures reports how many run status transitions could not be
+// persisted (including terminal statuses and heartbeats).
+func (r *Runner) RunUpdateFailures() int64 { return atomic.LoadInt64(&r.runUpdateFailures) }
+
+// TaskStatusFailures reports how many task status transitions could not be
+// persisted.
+func (r *Runner) TaskStatusFailures() int64 { return atomic.LoadInt64(&r.taskStatusFailures) }
+
+func (r *Runner) setTaskStatus(taskID uint, status, errCode, errMsg string) error {
 	fields := map[string]any{"status": status}
 	if errCode != "" && r.taskHasErrorCols {
 		fields["last_error_code"] = errCode
 		fields["last_error_msg"] = errMsg
 	}
 	if err := r.db.Model(&model.AITask{}).Where("id = ?", taskID).Updates(fields).Error; err != nil {
-		log.Printf("[ai] task_id=%d status update failed: %v", taskID, err)
+		atomic.AddInt64(&r.taskStatusFailures, 1)
+		log.Printf("[ai] ALERT task_id=%d status=%s update failed: %v", taskID, status, err)
+		return err
 	}
+	return nil
 }
 
 func decodeConfig(raw string) TaskConfig {

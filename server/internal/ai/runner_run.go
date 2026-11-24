@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/easyavr/easyavr/internal/model"
@@ -129,43 +130,72 @@ func (r *Runner) taskLoop(ctx context.Context, taskID, channelID uint) {
 	}
 }
 
-// doWork is one scheduled execution: it creates a run record, waits for a
-// global and per-channel slot (without holding any Runner lock), executes with
-// retries and finally writes the run/task terminal state.
+// doWork is one scheduled execution: it creates a run record BEFORE any AI
+// analysis, waits for a global and per-channel slot (without holding any
+// Runner lock), executes with retries and finally writes run/task terminal
+// state. Every retry opens a fresh run record; a runID is never reused.
 func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
-	now := time.Now()
-	run := &model.AITaskRun{
-		TaskID:    taskID,
-		Status:    RunPending,
-		StartedAt: &now,
-		LastRunAt: &now,
-		WorkerID:  r.workerID,
-	}
-	runID := uint(0)
-	if err := r.db.Create(run).Error; err != nil {
-		log.Printf("[ai] task_id=%d create run failed: %v", taskID, err)
-	} else {
-		runID = run.ID
+	// current is the run row for the attempt in flight. It is atomic because
+	// the heartbeat goroutine reads it while the main goroutine swaps it on a
+	// retry.
+	var current atomic.Uint64
+	getRunID := func() uint { return uint(current.Load()) }
+	finalized := false
+
+	// newRun either opens a fresh run row or aborts the whole execution. A
+	// create failure is a hard stop: no analyzer call may follow it.
+	newRun := func(attempt int, prev *classifiedError) bool {
+		if prevID := getRunID(); prevID != 0 && prev != nil {
+			// Close out the failed attempt before opening its successor.
+			if err := r.finalizeRun(taskID, prevID, RunFailed, prev, attempt-1); err != nil {
+				log.Printf("[ai] ALERT task_id=%d run_id=%d previous attempt status not persisted: %v", taskID, prevID, err)
+			}
+		}
+		now := time.Now()
+		run := &model.AITaskRun{
+			TaskID:     taskID,
+			Status:     RunPending,
+			StartedAt:  &now,
+			LastRunAt:  &now,
+			WorkerID:   r.workerID,
+			RetryCount: attempt,
+		}
+		if err := r.db.Create(run).Error; err != nil {
+			atomic.AddInt64(&r.runCreateFailures, 1)
+			log.Printf("[ai] ALERT task_id=%d create run failed attempt=%d code=%s err=%v; analysis skipped",
+				taskID, attempt, ErrorInternal, err)
+			r.setTaskStatus(taskID, "failed", string(ErrorInternal), "failed to create task run record")
+			finalized = true // the deferred finalizer must not overwrite the alert above
+			return false
+		}
+		current.Store(uint64(run.ID))
+		finalized = false
+		return true
 	}
 
-	finalized := false
+	// finish is the finalizer for the attempt currently in flight. The runID
+	// guard is preserved: with no persisted run there is no run to finalize.
 	finish := func(status string, cerr *classifiedError, retries int) {
 		if finalized {
 			return
 		}
 		finalized = true
-		if runID != 0 {
-			r.finalizeRun(taskID, runID, status, cerr, retries)
+		if id := getRunID(); id != 0 {
+			if err := r.finalizeRun(taskID, id, status, cerr, retries); err != nil {
+				log.Printf("[ai] ALERT task_id=%d run_id=%d terminal status=%s not persisted: %v", taskID, id, status, err)
+				r.setTaskStatus(taskID, "failed", string(ErrorInternal), "failed to persist run terminal status")
+				return
+			}
 		}
 		code := ""
 		if cerr != nil {
 			code = string(cerr.code)
 		}
-		log.Printf("[ai] task_id=%d run_id=%d status=%s error_code=%s retry_count=%d", taskID, runID, status, code, retries)
+		log.Printf("[ai] task_id=%d run_id=%d status=%s error_code=%s retry_count=%d", taskID, getRunID(), status, code, retries)
 
 		taskStatus := "running"
 		switch status {
-		case RunFailed:
+		case RunFailed, RunTimeout:
 			taskStatus = "failed"
 		case RunStopped:
 			taskStatus = "stopped"
@@ -186,6 +216,11 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 			finish(RunFailed, classify(ErrorInternal, false, "task execution aborted", nil), 0)
 		}
 	}()
+
+	// No analysis before the run record exists.
+	if !newRun(0, nil) {
+		return
+	}
 
 	if err := r.global.acquire(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -208,12 +243,7 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 	}
 	defer sem.release()
 
-	if runID != 0 {
-		r.updateRun(runID, map[string]any{"status": RunStarting})
-	}
 	opts := r.currentOptions()
-	attemptCtx, cancel := context.WithTimeout(ctx, opts.TaskTimeout)
-	defer cancel()
 
 	// A heartbeat keeps long-running attempts observable after a restart.
 	hbStop, hbDone := make(chan struct{}), make(chan struct{})
@@ -226,28 +256,31 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 			case <-hbStop:
 				return
 			case <-ticker.C:
-				if runID != 0 {
-					r.updateRun(runID, map[string]any{"heartbeat_at": time.Now()})
+				if id := getRunID(); id != 0 {
+					_ = r.updateRun(id, map[string]any{"heartbeat_at": time.Now()}) // updateRun alerts on failure
 				}
 			}
 		}
 	}()
 	defer func() { close(hbStop); <-hbDone }()
 
-	if runID != 0 {
-		r.updateRun(runID, map[string]any{"status": RunRunning})
-	}
-	cerr, retries := r.attemptWithRetry(attemptCtx, taskID, runID)
+	cerr, retries, timedOut := r.attemptWithRetry(ctx, taskID, getRunID, newRun)
 	if ctx.Err() != nil {
 		// A caller-initiated cancel (Stop/Close) is a clean stop, not a failure.
 		finish(RunStopped, nil, retries)
 		return
 	}
-	if cerr != nil {
+	switch {
+	case timedOut:
+		if cerr == nil {
+			cerr = classify(ErrorProviderTimeout, false, "task execution timed out", nil)
+		}
+		finish(RunTimeout, cerr, retries)
+	case cerr != nil:
 		finish(RunFailed, cerr, retries)
-		return
+	default:
+		finish(RunSucceeded, nil, retries)
 	}
-	finish(RunSucceeded, nil, retries)
 }
 
 func heartbeatPeriod(timeout time.Duration) time.Duration {
@@ -263,8 +296,15 @@ func heartbeatPeriod(timeout time.Duration) time.Duration {
 
 // attemptWithRetry retries only transient provider/stream/frame failures, and
 // never after an event has been created (which would duplicate findings and
-// notifications). Backoff is base*2^n with a cap.
-func (r *Runner) attemptWithRetry(ctx context.Context, taskID, runID uint) (*classifiedError, int) {
+// notifications). Backoff is base*2^n with a cap. Each retry gets a brand new
+// run record, so a failed attempt can never be silently rewritten as a later
+// successful one. The returned flag reports a hard timeout.
+func (r *Runner) attemptWithRetry(
+	ctx context.Context,
+	taskID uint,
+	getRunID func() uint,
+	newRun func(int, *classifiedError) bool,
+) (*classifiedError, int, bool) {
 	opts := r.currentOptions()
 	retries := 0
 	var cerr *classifiedError
@@ -276,27 +316,46 @@ func (r *Runner) attemptWithRetry(ctx context.Context, taskID, runID uint) (*cla
 			case <-timer.C:
 			case <-ctx.Done():
 				timer.Stop()
-				return classify(ErrorInternal, false, "task execution canceled", ctx.Err()), retries
+				return classify(ErrorInternal, false, "task execution canceled", ctx.Err()), retries, false
 			}
 			timer.Stop()
 			retries = attempt
-			if runID != 0 {
-				r.updateRun(runID, map[string]any{
-					"status": RunRunning, "retry_count": retries, "last_run_at": time.Now(),
-				})
+			if !newRun(attempt, cerr) {
+				return classify(ErrorInternal, false, "failed to create retry run record", nil), retries, false
 			}
 		}
-		created, attemptErr := r.executeAttempt(ctx, taskID)
-		cerr = attemptErr
+		stepCtx, cancelStep := context.WithTimeout(ctx, opts.TaskTimeout)
+		created, stepErr, timedOut := r.runSingleAttempt(stepCtx, taskID, getRunID(), retries)
+		cancelStep()
+		cerr = stepErr
 		if cerr == nil {
-			return nil, retries
+			return nil, retries, false
 		}
-		log.Printf("[ai] task_id=%d run_id=%d error_code=%s attempt=%d", taskID, runID, cerr.code, attempt+1)
-		if created > 0 || !isRetryable(cerr, ctx) {
-			return cerr, retries
+		log.Printf("[ai] task_id=%d run_id=%d error_code=%s attempt=%d", taskID, getRunID(), cerr.code, attempt+1)
+		if timedOut || created > 0 || !isRetryable(cerr, ctx) {
+			return cerr, retries, timedOut
 		}
 	}
-	return cerr, retries
+	return cerr, retries, false
+}
+
+// runSingleAttempt performs one analysis with its own timeout window and
+// records the starting/running transitions. Every update failure is surfaced
+// by updateRun (ALERT log + counter) instead of being swallowed.
+func (r *Runner) runSingleAttempt(ctx context.Context, taskID, runID uint, retries int) (int, *classifiedError, bool) {
+	if err := r.updateRun(runID, map[string]any{"status": RunStarting}); err != nil {
+		log.Printf("[ai] ALERT task_id=%d run_id=%d starting status not persisted: %v", taskID, runID, err)
+	}
+	if err := r.updateRun(runID, map[string]any{"status": RunRunning, "retry_count": retries}); err != nil {
+		log.Printf("[ai] ALERT task_id=%d run_id=%d running status not persisted: %v", taskID, runID, err)
+	}
+
+	created, cerr := r.executeAttempt(ctx, taskID)
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if timedOut && (cerr == nil || cerr.code != ErrorProviderTimeout) {
+		cerr = classify(ErrorProviderTimeout, false, "task execution timed out", ctx.Err())
+	}
+	return created, cerr, timedOut
 }
 
 func backoffDelay(base time.Duration, n int) time.Duration {
@@ -322,7 +381,9 @@ func (r *Runner) executeAttempt(ctx context.Context, taskID uint) (int, *classif
 	return len(events), cerr
 }
 
-func (r *Runner) finalizeRun(taskID, runID uint, status string, cerr *classifiedError, retries int) {
+// finalizeRun writes a terminal run status. The returned error must be handled
+// by the caller: a dropped terminal update leaves the run looking live.
+func (r *Runner) finalizeRun(taskID, runID uint, status string, cerr *classifiedError, retries int) error {
 	now := time.Now()
 	fields := map[string]any{
 		"status":      status,
@@ -333,5 +394,5 @@ func (r *Runner) finalizeRun(taskID, runID uint, status string, cerr *classified
 		fields["error_code"] = string(cerr.code)
 		fields["error_msg"] = cerr.publicMessage()
 	}
-	r.updateRun(runID, fields)
+	return r.updateRun(runID, fields)
 }
