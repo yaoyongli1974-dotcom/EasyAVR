@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -256,7 +257,7 @@ func (s *Service) Cleanup() (deleted int, bytes int64, err error) {
 		if referenced[snap.URL] {
 			continue
 		}
-		abs, err := s.ResolvePath(snap.Path)
+		abs, err := s.resolve(snap.Path, false)
 		if err != nil {
 			log.Printf("[snapshot] retention: skip snapshot %d: %v", snap.ID, err)
 			continue
@@ -348,6 +349,9 @@ var (
 	ErrInvalidToken = errors.New("invalid snapshot access token")
 	ErrExpiredToken = errors.New("snapshot access token expired")
 	ErrPathOutside  = errors.New("snapshot path outside storage directory")
+	// ErrPathNotFound wraps fs.ErrNotExist so callers can distinguish a
+	// missing file (404) from an escaping path (403) without leaking a path.
+	ErrPathNotFound = fmt.Errorf("snapshot file does not exist: %w", fs.ErrNotExist)
 )
 
 type accessPayload struct {
@@ -417,21 +421,83 @@ func ParseSnapshotAccessToken(token, secret string) (uint, uint, time.Time, erro
 	return p.ID, p.UserID, expires, nil
 }
 
-// ResolvePath converts a catalog-relative snapshot path to an absolute path,
-// rejecting absolute paths, empty paths and any traversal outside the storage
-// directory (siblings such as <dir>-evil are rejected too).
+// ResolvePath converts a catalog-relative snapshot path to its canonical,
+// symlink-free absolute path inside the storage directory. It rejects empty
+// and absolute paths, traversal (including sibling directories with a
+// matching prefix) and any symlink — including multi-level chains — whose
+// resolved target escapes the snapshot root. A missing path returns
+// ErrPathNotFound; all errors are fixed strings that never include a local
+// path.
 func (s *Service) ResolvePath(rel string) (string, error) {
+	return s.resolve(rel, true)
+}
+
+// resolve implements ResolvePath. requireExists=false is used by retention
+// cleanup, where an orphan row's missing file must still be removable; the
+// lexical checks and symlink validation stay identical in both modes.
+func (s *Service) resolve(rel string, requireExists bool) (string, error) {
 	if rel == "" || filepath.IsAbs(rel) {
 		return "", ErrPathOutside
 	}
 	root, err := filepath.Abs(s.dir)
 	if err != nil {
-		return "", err
+		return "", ErrPathOutside
 	}
 	root = filepath.Clean(root)
+	// Resolve the root itself so a symlinked storage directory compares
+	// against its real location rather than the symlink path.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", ErrPathOutside
+	}
+	realRoot = filepath.Clean(realRoot)
+
 	target := filepath.Clean(filepath.Join(root, rel))
 	if !strings.HasPrefix(target, root+string(os.PathSeparator)) {
 		return "", ErrPathOutside
 	}
+
+	// EvalSymlinks follows every symlink component, so a link that points
+	// outside the root (directly or through a chain) is detected here.
+	resolved, err := filepath.EvalSymlinks(target)
+	if err == nil {
+		if !pathWithin(resolved, realRoot) {
+			return "", ErrPathOutside
+		}
+		return resolved, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", ErrPathOutside
+	}
+	// A dangling symlink at the terminal component cannot be proven to be
+	// inside the root, so reject it rather than letting a later open follow it.
+	if info, lerr := os.Lstat(target); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", ErrPathOutside
+	}
+	if requireExists {
+		return "", ErrPathNotFound
+	}
+
+	// Missing terminal path (cleanup only): validate each existing ancestor
+	// so a symlinked parent cannot redirect the removal outside the root.
+	for p := target; p != root && p != filepath.Dir(p); p = filepath.Dir(p) {
+		info, lerr := os.Lstat(p)
+		if lerr != nil {
+			if errors.Is(lerr, fs.ErrNotExist) {
+				continue
+			}
+			return "", ErrPathOutside
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			r, rerr := filepath.EvalSymlinks(p)
+			if rerr != nil || !pathWithin(r, realRoot) {
+				return "", ErrPathOutside
+			}
+		}
+	}
 	return target, nil
+}
+
+func pathWithin(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(os.PathSeparator))
 }

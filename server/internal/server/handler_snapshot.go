@@ -1,8 +1,11 @@
 package server
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -100,14 +103,71 @@ func (a *App) snapshotSignedAccess(c *gin.Context) {
 	}
 	path, err := a.snaps.ResolvePath(snap.Path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			fail(c, http.StatusNotFound, "snapshot file not found")
+			return
+		}
 		fail(c, http.StatusForbidden, "invalid snapshot path")
 		return
 	}
-	if _, err := os.Stat(path); err != nil {
+	a.serveSnapshotFile(c, path)
+}
+
+// serveSnapshotFile streams an already-canonicalised snapshot path from an
+// open handle. ResolvePath removed every symlink component with EvalSymlinks;
+// the Lstat checks around Open detect a path swapped for a symlink in the
+// check/use window. The path is never handed back to c.File, which would
+// re-resolve it and could follow a freshly planted symlink. O_NOFOLLOW is not
+// referenced here because syscall.O_NOFOLLOW is Unix-only; this variant stays
+// pure Go and builds on Windows. On Unix the post-open Lstat/SameFile pair
+// gives equivalent protection for the final component.
+func (a *App) serveSnapshotFile(c *gin.Context, path string) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		a.failSnapshotFileError(c, err)
+		return
+	}
+	if before.Mode()&os.ModeSymlink != 0 {
+		fail(c, http.StatusForbidden, "invalid snapshot path")
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			fail(c, http.StatusNotFound, "snapshot file not found")
+			return
+		}
+		fail(c, http.StatusForbidden, "invalid snapshot path")
+		return
+	}
+	defer f.Close()
+	after, err := os.Lstat(path)
+	if err != nil {
+		a.failSnapshotFileError(c, err)
+		return
+	}
+	if !os.SameFile(before, after) || after.Mode()&os.ModeSymlink != 0 {
+		fail(c, http.StatusForbidden, "invalid snapshot path")
+		return
+	}
+	info, err := f.Stat()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "snapshot read error")
+		return
+	}
+	if !info.Mode().IsRegular() {
+		fail(c, http.StatusForbidden, "invalid snapshot path")
+		return
+	}
+	http.ServeContent(c.Writer, c.Request, filepath.Base(path), info.ModTime(), f)
+}
+
+func (a *App) failSnapshotFileError(c *gin.Context, err error) {
+	if errors.Is(err, fs.ErrNotExist) {
 		fail(c, http.StatusNotFound, "snapshot file not found")
 		return
 	}
-	c.File(path)
+	fail(c, http.StatusForbidden, "invalid snapshot path")
 }
 
 func (a *App) listSnapshots(c *gin.Context) {

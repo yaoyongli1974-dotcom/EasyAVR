@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -687,4 +689,156 @@ func TestSnapshotSignedAccessRevalidatesUser(t *testing.T) {
 		}
 		assertSnapshotAccessNoLocalPath(t, app, body)
 	})
+}
+
+// addSnapshotSymlink catalogs a symlink placed in the snapshot directory, so
+// the public access route is exercised with a valid token for an escaping
+// path.
+func addSnapshotSymlink(t *testing.T, app *App, channelID uint, rel, target string) uint {
+	t.Helper()
+	full := filepath.Join(app.snaps.Dir(), rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(target, full); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	snap := model.Snapshot{
+		ChannelID: channelID,
+		Path:      rel,
+		URL:       "/snapshots/" + rel,
+		TakenAt:   time.Now(),
+	}
+	if err := app.db.Create(&snap).Error; err != nil {
+		t.Fatalf("create snapshot row: %v", err)
+	}
+	return snap.ID
+}
+
+func TestSnapshotSignedAccessRejectsSymlinkEscape(t *testing.T) {
+	srv, cfg, app := newSnapshotTestServer(t)
+	adminID := snapshotUserID(t, app, cfg.AdminUser)
+	_, chID := newSnapshotChannel(t, app, "escape-channel")
+
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "secret.jpg")
+	if err := os.WriteFile(outside, []byte("TOP-SECRET"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		rel  string
+		link string
+	}{
+		{"direct symlink", "direct.jpg", outside},
+		{"multi-level symlink", "multi.jpg", filepath.Join(app.snaps.Dir(), "hop.jpg")},
+		{"symlink to outside directory", "outdir/secret.jpg", outsideDir},
+	}
+	// The intermediate hop for the multi-level case.
+	if err := os.Symlink(outside, filepath.Join(app.snaps.Dir(), "hop.jpg")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := addSnapshotSymlink(t, app, chID, tc.rel, tc.link)
+			token, _, err := snapshot.SnapshotAccessToken(id, adminID, time.Minute, cfg.JWTSecret)
+			if err != nil {
+				t.Fatalf("issue token: %v", err)
+			}
+			code, body := snapshotSignedGet(t, srv, token)
+			if code != http.StatusForbidden {
+				t.Fatalf("symlink escape: got %d %q, want 403", code, body)
+			}
+			assertSnapshotAccessNoLocalPath(t, app, body)
+			if strings.Contains(body, "TOP-SECRET") {
+				t.Fatalf("response leaked outside file content: %q", body)
+			}
+		})
+	}
+}
+
+func TestSnapshotSignedAccessConcurrentDelete(t *testing.T) {
+	srv, cfg, app := newSnapshotTestServer(t)
+	adminID := snapshotUserID(t, app, cfg.AdminUser)
+	_, chID := newSnapshotChannel(t, app, "concurrent-channel")
+
+	const files, readers = 6, 6
+	paths := make([]string, files)
+	tokens := make([]string, files)
+	for i := 0; i < files; i++ {
+		rel := fmt.Sprintf("c/%d.jpg", i)
+		id := addSnapshotFile(t, app, chID, rel)
+		paths[i] = filepath.Join(app.snaps.Dir(), rel)
+		tok, _, err := snapshot.SnapshotAccessToken(id, adminID, time.Minute, cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("issue token: %v", err)
+		}
+		tokens[i] = tok
+		// Precondition: a normal snapshot is served before any deletion.
+		if code, body := snapshotSignedGet(t, srv, tok); code != http.StatusOK || body != "JPEG:"+rel {
+			t.Fatalf("precondition: got %d %q, want 200 %q", code, body, "JPEG:"+rel)
+		}
+	}
+
+	var bad, served atomic.Int64
+	var wg, firstWG sync.WaitGroup
+	start := make(chan struct{})
+	firstWG.Add(readers)
+	for w := 0; w < readers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 40; i++ {
+				idx := (i + w) % files
+				resp, err := http.Get(srv.URL + "/api/v1/snapshot-access/" + tokens[idx])
+				if err != nil {
+					bad.Add(1)
+					if i == 0 {
+						firstWG.Done()
+					}
+					continue
+				}
+				body, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					bad.Add(1)
+				} else {
+					switch resp.StatusCode {
+					case http.StatusOK:
+						if string(body) == fmt.Sprintf("JPEG:c/%d.jpg", idx) {
+							served.Add(1)
+						} else {
+							bad.Add(1)
+						}
+					case http.StatusNotFound:
+						// The file was removed mid-request: allowed.
+					default:
+						bad.Add(1)
+					}
+					if strings.Contains(string(body), app.snaps.Dir()) {
+						bad.Add(1)
+					}
+				}
+				if i == 0 {
+					firstWG.Done()
+				}
+			}
+		}(w)
+	}
+
+	close(start)
+	firstWG.Wait()
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
+	wg.Wait()
+
+	if served.Load() == 0 {
+		t.Fatal("no snapshot was served while deletions were in flight")
+	}
+	if bad.Load() != 0 {
+		t.Fatalf("unexpected responses during concurrent access: %d", bad.Load())
+	}
 }

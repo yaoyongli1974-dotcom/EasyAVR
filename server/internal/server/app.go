@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -178,7 +179,11 @@ func (a *App) Run() error {
 	ctx := context.Background()
 	// Repair orphaned AI task runs from a previous process before any new
 	// scheduling starts. Failures are logged by the runner and never abort boot.
-	go a.runner.Recover()
+	go func() {
+		if err := a.runner.Recover(); err != nil && !errors.Is(err, ai.ErrRunnerClosed) {
+			log.Printf("[easyavr] ai recover: %v", err)
+		}
+	}()
 	a.rec.StartScheduler(ctx, time.Minute)
 	a.snaps.StartScheduler(ctx, 30*time.Second)
 	a.snaps.StartCleanupScheduler(ctx)

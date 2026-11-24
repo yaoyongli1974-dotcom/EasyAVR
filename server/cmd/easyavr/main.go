@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/security"
@@ -53,7 +52,6 @@ func main() {
 		<-stop
 		log.Printf("[easyavr] shutting down")
 		app.Close()
-		time.Sleep(200 * time.Millisecond)
 		os.Exit(0)
 	}()
 	if err := app.Run(); err != nil {

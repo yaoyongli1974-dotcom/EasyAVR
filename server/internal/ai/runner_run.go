@@ -20,6 +20,7 @@ type semaphore struct {
 	limit   int
 	active  int
 	waiters []chan struct{}
+	closed  bool
 }
 
 func newSemaphore(limit int) *semaphore {
@@ -34,9 +35,25 @@ func (s *semaphore) setLimit(limit int) {
 		limit = 1
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.limit = limit
 	s.grantLocked()
-	s.mu.Unlock()
+}
+
+// close aborts every waiter and blocks new acquisitions. Called by Runner.Close
+// so shutdown does not leave goroutines parked on a semaphore.
+func (s *semaphore) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for _, ch := range s.waiters {
+		close(ch)
+	}
+	s.waiters = nil
+	s.active = 0
 }
 
 // grantLocked hands free slots to queued waiters. The caller must hold s.mu.
@@ -56,6 +73,10 @@ func (s *semaphore) acquire(ctx context.Context) error {
 	default:
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrRunnerClosed
+	}
 	if s.active < s.limit && len(s.waiters) == 0 {
 		s.active++
 		s.mu.Unlock()
@@ -67,6 +88,12 @@ func (s *semaphore) acquire(ctx context.Context) error {
 
 	select {
 	case <-ch:
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return ErrRunnerClosed
+		}
 		return nil
 	case <-ctx.Done():
 		s.mu.Lock()
@@ -78,30 +105,47 @@ func (s *semaphore) acquire(ctx context.Context) error {
 				break
 			}
 		}
-		if !found {
+		if !found && !s.closed {
 			// A slot was granted concurrently; return it to the semaphore.
 			if s.active > 0 {
 				s.active--
 			}
 			s.grantLocked()
 		}
+		err := ctx.Err()
 		s.mu.Unlock()
-		return ctx.Err()
+		if err == nil {
+			return ErrRunnerClosed // woken by close(), not by a granted slot
+		}
+		return err
 	}
 }
 
 func (s *semaphore) release() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	if s.active > 0 {
 		s.active--
 	}
 	s.grantLocked()
-	s.mu.Unlock()
+}
+
+// stopRequested reports whether this execution was canceled by Stop/Close or
+// hit its own deadline. Both are clean stops, not provider failures.
+func stopRequested(ctx context.Context, err error) bool {
+	return errors.Is(err, ErrRunnerClosed) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil
 }
 
 // taskLoop runs one immediate execution followed by periodic executions until
 // ctx is canceled. The ticker stops with the context.
 func (r *Runner) taskLoop(ctx context.Context, taskID, channelID uint) {
+	if ctx.Err() != nil {
+		return
+	}
 	var task model.AITask
 	if err := r.db.First(&task, taskID).Error; err != nil {
 		log.Printf("[ai] task_id=%d load failed: %v", taskID, err)
@@ -125,6 +169,9 @@ func (r *Runner) taskLoop(ctx context.Context, taskID, channelID uint) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
 			r.doWork(ctx, taskID, channelID)
 		}
 	}
@@ -135,6 +182,10 @@ func (r *Runner) taskLoop(ctx context.Context, taskID, channelID uint) {
 // Runner lock), executes with retries and finally writes run/task terminal
 // state. Every retry opens a fresh run record; a runID is never reused.
 func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
+	// Never open a new run (or start a new execution) after cancellation.
+	if ctx.Err() != nil || r.IsClosed() {
+		return
+	}
 	// current is the run row for the attempt in flight. It is atomic because
 	// the heartbeat goroutine reads it while the main goroutine swaps it on a
 	// retry.
@@ -217,13 +268,13 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 		}
 	}()
 
-	// No analysis before the run record exists.
-	if !newRun(0, nil) {
+	// No analysis before the run record exists, and none after cancellation.
+	if ctx.Err() != nil || !newRun(0, nil) {
 		return
 	}
 
 	if err := r.global.acquire(ctx); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if stopRequested(ctx, err) {
 			finish(RunStopped, nil, 0)
 		} else {
 			finish(RunFailed, classify(ErrorResourceLimit, false, "global concurrency limit", err), 0)
@@ -234,7 +285,7 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 
 	sem := r.channelSem(channelID)
 	if err := sem.acquire(ctx); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if stopRequested(ctx, err) {
 			finish(RunStopped, nil, 0)
 		} else {
 			finish(RunFailed, classify(ErrorResourceLimit, false, "channel concurrency limit", err), 0)
@@ -245,10 +296,15 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 
 	opts := r.currentOptions()
 
-	// A heartbeat keeps long-running attempts observable after a restart.
+	// A heartbeat keeps long-running attempts observable after a restart. It is
+	// tracked so Close does not return while a heartbeat write is in flight.
 	hbStop, hbDone := make(chan struct{}), make(chan struct{})
+	tracked := r.track(1)
 	go func() {
 		defer close(hbDone)
+		if tracked {
+			defer r.finishTrack()
+		}
 		ticker := time.NewTicker(heartbeatPeriod(opts.TaskTimeout))
 		defer ticker.Stop()
 		for {
@@ -256,6 +312,9 @@ func (r *Runner) doWork(ctx context.Context, taskID, channelID uint) {
 			case <-hbStop:
 				return
 			case <-ticker.C:
+				if r.IsClosed() {
+					return
+				}
 				if id := getRunID(); id != 0 {
 					_ = r.updateRun(id, map[string]any{"heartbeat_at": time.Now()}) // updateRun alerts on failure
 				}
@@ -309,6 +368,9 @@ func (r *Runner) attemptWithRetry(
 	retries := 0
 	var cerr *classifiedError
 	for attempt := 0; attempt <= opts.MaxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return classify(ErrorInternal, false, "task execution canceled", ctx.Err()), retries, false
+		}
 		if attempt > 0 {
 			delay := backoffDelay(opts.BackoffBase, attempt-1)
 			timer := time.NewTimer(delay)

@@ -45,6 +45,10 @@ type RunnerOptions struct {
 	TaskTimeout     time.Duration // hard timeout for one attempt, default 120s
 	MaxRetries      int           // retries for transient provider/stream/frame errors, default 2
 	BackoffBase     time.Duration // exponential backoff base, default 2s
+	// ShutdownTimeout bounds how long Close waits for in-flight work after the
+	// runner context has been canceled. Running attempts should react to the
+	// cancellation immediately; the timeout only guards stuck providers.
+	ShutdownTimeout time.Duration // default 10s
 }
 
 const (
@@ -53,8 +57,13 @@ const (
 	defaultTaskTimeout     = 120 * time.Second
 	defaultMaxRetries      = 2
 	defaultBackoffBase     = 2 * time.Second
+	defaultShutdownTimeout = 10 * time.Second
 	maxBackoff             = 60 * time.Second
 )
+
+// ErrRunnerClosed is returned by Start/Recover/RecoverTask/RunOnce once the
+// runner has been shut down. Callers can fail fast without touching the DB.
+var ErrRunnerClosed = errors.New("ai runner is closed")
 
 // run statuses persisted in AITaskRun.
 const (
@@ -103,6 +112,19 @@ type Runner struct {
 	global *semaphore
 	chSems map[uint]*semaphore
 
+	// Lifecycle. baseCtx is canceled by Close/Shutdown; every execution,
+	// recovery scan and one-shot run derives from it so shutdown stops new
+	// work while in-flight attempts wind down. inflight/idle let Close wait
+	// without spawning a dedicated waiter goroutine.
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
+	closed     bool          // guarded by mu
+	abandoned  bool          // guarded by mu; set when Close exceeds its grace period
+	closedDone chan struct{} // closed once shutdown begins; idempotent Close waits on it
+	inflight   int           // guarded by mu
+	idle       chan struct{} // closed whenever inflight reaches zero
+	recoverMu  sync.Mutex    // serializes recover scans/work per runner
+
 	optMu            sync.RWMutex
 	opts             RunnerOptions
 	taskHasErrorCols bool
@@ -129,6 +151,9 @@ func NewRunner(db *gorm.DB, zlm *video.Client) *Runner {
 // NewRunnerWithOptions builds a Runner with explicit bounds.
 func NewRunnerWithOptions(db *gorm.DB, zlm *video.Client, opts RunnerOptions) *Runner {
 	opts = normalizeOptions(opts)
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	idle := make(chan struct{})
+	close(idle)
 	r := &Runner{
 		db: db, zlm: zlm,
 		tasks:           map[uint]*runnerState{},
@@ -136,6 +161,10 @@ func NewRunnerWithOptions(db *gorm.DB, zlm *video.Client, opts RunnerOptions) *R
 		opts:            opts,
 		global:          newSemaphore(opts.MaxConcurrency),
 		workerID:        newWorkerID(),
+		baseCtx:         baseCtx,
+		baseCancel:      baseCancel,
+		closedDone:      make(chan struct{}),
+		idle:            idle,
 		analyzerFactory: NewAnalyzer,
 		frameGrabber:    media.GrabFrame,
 	}
@@ -161,18 +190,26 @@ func normalizeOptions(opts RunnerOptions) RunnerOptions {
 	if opts.BackoffBase <= 0 {
 		opts.BackoffBase = defaultBackoffBase
 	}
+	if opts.ShutdownTimeout <= 0 {
+		opts.ShutdownTimeout = defaultShutdownTimeout
+	}
 	return opts
 }
 
 // Configure updates bounds at runtime. Changed limits apply to tasks started
-// afterwards and to already-waiting acquisitions immediately.
+// afterwards and to already-waiting acquisitions immediately. It is a no-op
+// after shutdown so a closed runner cannot be resurrected.
 func (r *Runner) Configure(opts RunnerOptions) {
 	opts = normalizeOptions(opts)
 	r.optMu.Lock()
 	r.opts = opts
 	r.optMu.Unlock()
-	r.global.setLimit(opts.MaxConcurrency)
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.global.setLimit(opts.MaxConcurrency)
 	for _, sem := range r.chSems {
 		sem.setLimit(opts.PerChannelLimit)
 	}
@@ -183,6 +220,91 @@ func (r *Runner) currentOptions() RunnerOptions {
 	r.optMu.RLock()
 	defer r.optMu.RUnlock()
 	return r.opts
+}
+
+// track reserves n in-flight slots. A failed reservation means the runner is
+// closing and no new work may start. Callers must balance it with finishTrack.
+func (r *Runner) track(n int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.trackLocked(n)
+}
+
+// trackLocked is track with r.mu already held.
+func (r *Runner) trackLocked(n int) bool {
+	if r.closed {
+		return false
+	}
+	if r.inflight == 0 {
+		r.idle = make(chan struct{})
+	}
+	r.inflight += n
+	return true
+}
+
+func (r *Runner) finishTrack() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inflight--
+	if r.inflight <= 0 {
+		r.inflight = 0
+		close(r.idle)
+	}
+}
+
+// idleLocked returns a channel closed when all tracked work has exited.
+// Caller holds r.mu.
+func (r *Runner) idleLocked() <-chan struct{} {
+	if r.inflight == 0 {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return r.idle
+}
+
+// deriveCtx binds a task/caller context to the runner lifetime: Close cancels
+// every derived context even when the original caller stays alive.
+func (r *Runner) deriveCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(r.baseCtx, cancel)
+	return ctx, func() { stop(); cancel() }
+}
+
+// IsClosed reports whether Close/Shutdown has begun.
+func (r *Runner) IsClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
+// Done is closed when shutdown begins (not when it finishes). Close itself is
+// idempotent and blocks until in-flight work has exited.
+func (r *Runner) Done() <-chan struct{} { return r.closedDone }
+
+// canWriteDB guards finalizer writes from work abandoned by a shutdown timeout.
+func (r *Runner) canWriteDB() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.abandoned
+}
+
+// isLiveLocked reports whether a task still has a live execution loop.
+// Caller holds r.mu.
+func (r *Runner) isLiveLocked(taskID uint) bool {
+	state := r.tasks[taskID]
+	if state == nil {
+		return false
+	}
+	select {
+	case <-state.done:
+		return false
+	default:
+		return true
+	}
 }
 
 func newWorkerID() string {
@@ -217,7 +339,18 @@ func (r *Runner) SetFrameGrabber(fn func(context.Context, string) ([]byte, error
 // reserved by this call (context, registered state) is released before the
 // error is returned.
 func (r *Runner) Start(taskID uint) error {
+	// Tracking the caller covers the DB work done before the loop launches, so
+	// Close waits for it instead of returning while a Start is still writing.
+	if !r.track(1) {
+		return ErrRunnerClosed
+	}
+	defer r.finishTrack()
+
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRunnerClosed
+	}
 	if existing, ok := r.tasks[taskID]; ok {
 		select {
 		case <-existing.done: // stale entry from a loop that just exited
@@ -227,10 +360,13 @@ func (r *Runner) Start(taskID uint) error {
 			// The first caller owns the launch. Wait for its DB work so a
 			// concurrent Start never reports success for a failed launch.
 			<-existing.started
+			if r.IsClosed() || errors.Is(existing.initErr, ErrRunnerClosed) {
+				return ErrRunnerClosed
+			}
 			return existing.initErr
 		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := r.deriveCtx(r.baseCtx)
 	state := &runnerState{
 		id: taskID, cancel: cancel,
 		done: make(chan struct{}), started: make(chan struct{}),
@@ -263,8 +399,24 @@ func (r *Runner) Start(taskID uint) error {
 		log.Printf("[ai] ALERT task_id=%d start aborted, no execution launched: %v", taskID, initErr)
 		return initErr
 	}
+
+	// Reserve the loop slot and check the closed flag atomically: a shutdown
+	// between the DB work and this point must not launch an execution.
+	r.mu.Lock()
+	if r.closed || r.tasks[taskID] != state || !r.trackLocked(1) {
+		r.mu.Unlock()
+		state.initErr = ErrRunnerClosed
+		close(state.started)
+		cancel()
+		close(state.done)
+		r.dropState(state)
+		log.Printf("[ai] task_id=%d start aborted: runner is shutting down", taskID)
+		return ErrRunnerClosed
+	}
+	r.mu.Unlock()
 	close(state.started)
 	go func() {
+		defer r.finishTrack()
 		defer close(state.done)
 		defer r.dropState(state)
 		r.taskLoop(ctx, taskID, task.ChannelID)
@@ -283,10 +435,22 @@ func (r *Runner) dropState(state *runnerState) {
 // Stop cancels a running task, waits for its loop to exit, and records
 // terminal state. It is safe to call for a task that is not running.
 func (r *Runner) Stop(taskID uint) {
+	if !r.track(1) {
+		return // closed: no DB write, no new work
+	}
+	defer r.finishTrack()
+
 	r.mu.Lock()
-	state, ok := r.tasks[taskID]
+	state := r.tasks[taskID]
+	if state != nil {
+		select {
+		case <-state.done:
+			state = nil
+		default:
+		}
+	}
 	r.mu.Unlock()
-	if ok && state != nil {
+	if state != nil {
 		state.cancel()
 		select {
 		case <-state.done:
@@ -297,24 +461,53 @@ func (r *Runner) Stop(taskID uint) {
 	r.setTaskStatus(taskID, "stopped", "", "")
 }
 
-// Close cancels every task and waits for their loops to exit. Shutdown is an
+// Close cancels every task and waits for in-flight work to exit. It is
+// idempotent (concurrent/repeated calls all wait for the same shutdown), and
+// no Start/Recover/RunOnce may launch work once it begins. Shutdown is an
 // alias for graceful process shutdown.
 func (r *Runner) Close() {
 	r.mu.Lock()
+	if r.closed {
+		done := r.closedDone
+		r.mu.Unlock()
+		<-done
+		return
+	}
+	r.closed = true
+	close(r.closedDone)
+	idle := r.idleLocked()
 	states := make([]*runnerState, 0, len(r.tasks))
 	for _, state := range r.tasks {
 		states = append(states, state)
 	}
+	// Release every concurrency resource: waiters are woken with ErrRunnerClosed
+	// by the closed semaphores instead of lingering until their context expires.
+	r.global.close()
+	for _, sem := range r.chSems {
+		sem.close()
+	}
+	r.chSems = map[uint]*semaphore{}
+	r.tasks = map[uint]*runnerState{}
+	grace := r.currentOptions().ShutdownTimeout
 	r.mu.Unlock()
+
+	r.baseCancel()
+	begin := time.Now()
+	log.Printf("[ai] runner shutdown: canceling %d active task(s)", len(states))
 	for _, state := range states {
 		state.cancel()
+		log.Printf("[ai] task_id=%d shutdown: execution canceled", state.id)
 	}
-	for _, state := range states {
-		select {
-		case <-state.done:
-		case <-time.After(5 * time.Second):
-			log.Printf("[ai] task_id=%d close wait timed out", state.id)
-		}
+	select {
+	case <-idle:
+		log.Printf("[ai] runner shutdown complete in %v", time.Since(begin))
+	case <-time.After(grace):
+		// A provider that ignores cancellation must not write to the DB after
+		// Close has returned: skip the remaining finalizer updates.
+		r.mu.Lock()
+		r.abandoned = true
+		r.mu.Unlock()
+		log.Printf("[ai] ALERT runner shutdown exceeded %v; in-flight work abandoned", grace)
 	}
 }
 
@@ -325,29 +518,62 @@ func (r *Runner) Shutdown() { r.Close() }
 // the rest are reset to stopped. Lingering non-terminal runs are failed and
 // closed out. Recovery never uses enabled as a signal: enabled means the task
 // is configured, not that it was started.
-func (r *Runner) Recover() {
+func (r *Runner) Recover() error {
+	if !r.track(1) {
+		return ErrRunnerClosed
+	}
+	defer r.finishTrack()
+	if r.baseCtx.Err() != nil {
+		return ErrRunnerClosed
+	}
+
+	r.recoverMu.Lock()
+	defer r.recoverMu.Unlock()
 	var tasks []model.AITask
 	if err := r.db.Where("status = ?", "running").Find(&tasks).Error; err != nil {
 		log.Printf("[ai] recover scan failed: %v", err)
-		return
+		return err
 	}
 	for i := range tasks {
-		if err := r.RecoverTask(tasks[i].ID); err != nil {
+		if r.IsClosed() || r.baseCtx.Err() != nil {
+			log.Printf("[ai] recover aborted during shutdown")
+			return ErrRunnerClosed
+		}
+		if err := r.recoverTaskLocked(tasks[i].ID); err != nil && !errors.Is(err, ErrRunnerClosed) {
 			log.Printf("[ai] task_id=%d recover failed: %v", tasks[i].ID, err)
 		}
 	}
+	return nil
 }
 
 // RecoverTask recovers a single task. A failure is returned to the caller but
 // is never fatal to the service (Recover only logs it).
 func (r *Runner) RecoverTask(taskID uint) error {
+	if !r.track(1) {
+		return ErrRunnerClosed
+	}
+	defer r.finishTrack()
+
+	r.recoverMu.Lock()
+	defer r.recoverMu.Unlock()
+	return r.recoverTaskLocked(taskID)
+}
+
+// recoverTaskLocked implements recovery with recoverMu held. Runs owned by
+// this worker are left alone: repeated/concurrent recovery must not kill a
+// live execution, and Start is idempotent so only one loop exists per task.
+func (r *Runner) recoverTaskLocked(taskID uint) error {
+	if r.IsClosed() {
+		return ErrRunnerClosed
+	}
 	var task model.AITask
 	if err := r.db.First(&task, taskID).Error; err != nil {
 		return err
 	}
 	now := time.Now()
 	if err := r.db.Model(&model.AITaskRun{}).
-		Where("task_id = ? AND status IN ?", taskID, nonTerminalRunStatuses).
+		Where("task_id = ? AND status IN ? AND (worker_id IS NULL OR worker_id <> ?)",
+			taskID, nonTerminalRunStatuses, r.workerID).
 		Updates(map[string]any{
 			"status":      RunFailed,
 			"error_code":  string(ErrorInternal),
@@ -358,17 +584,33 @@ func (r *Runner) RecoverTask(taskID uint) error {
 	}
 	cfg := decodeConfig(task.Config)
 	if cfg.AutoRecover {
-		r.setTaskStatus(taskID, "running", "", "")
+		if err := r.setTaskStatus(taskID, "running", "", ""); err != nil {
+			return err
+		}
 		return r.Start(taskID)
 	}
-	r.Stop(taskID)
+	// Another caller may have started this task already; recovery must not
+	// stop a live loop that was launched outside Recover.
+	r.mu.Lock()
+	live := r.isLiveLocked(taskID)
+	r.mu.Unlock()
+	if !live {
+		r.Stop(taskID)
+	}
 	return nil
 }
 
 // RunOnce executes a task a single time and returns the generated events. Its
 // signature and response shape are kept stable for the /ai/tasks/:id/run API.
+// The execution is bound to the runner lifetime: Close cancels it as well.
 func (r *Runner) RunOnce(ctx context.Context, task model.AITask) ([]model.AIEvent, error) {
-	events, cerr := r.analyzeTask(ctx, task)
+	if !r.track(1) {
+		return nil, ErrRunnerClosed
+	}
+	defer r.finishTrack()
+	runCtx, cancel := r.deriveCtx(ctx)
+	defer cancel()
+	events, cerr := r.analyzeTask(runCtx, task)
 	if cerr != nil {
 		return events, cerr
 	}
@@ -428,7 +670,14 @@ func (r *Runner) analyzeTask(ctx context.Context, task model.AITask) ([]model.AI
 			return events, classify(ErrorInternal, false, fmt.Sprintf("failed to persist AI event (%T)", err), err)
 		}
 		if r.sink != nil {
-			go r.sink.OnEvent(ev)
+			if r.track(1) {
+				go func(ev model.AIEvent) {
+					defer r.finishTrack()
+					r.sink.OnEvent(ev)
+				}(ev)
+			} else {
+				log.Printf("[ai] task_id=%d event sink dropped during shutdown", task.ID)
+			}
 		}
 		events = append(events, ev)
 	}
@@ -458,6 +707,12 @@ func (r *Runner) channelSem(channelID uint) *semaphore {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		// A stray in-flight attempt must not resurrect a per-channel slot.
+		closed := newSemaphore(1)
+		closed.close()
+		return closed
+	}
 	if sem, ok := r.chSems[key]; ok {
 		return sem
 	}
@@ -470,7 +725,7 @@ func (r *Runner) channelSem(channelID uint) *semaphore {
 // alerts so a dropped status transition is never silent. Values are limited to
 // IDs/codes; no prompt, key or payload is ever logged.
 func (r *Runner) updateRun(runID uint, fields map[string]any) error {
-	if runID == 0 {
+	if runID == 0 || !r.canWriteDB() {
 		return nil
 	}
 	if err := r.db.Model(&model.AITaskRun{}).Where("id = ?", runID).Updates(fields).Error; err != nil {
@@ -493,6 +748,9 @@ func (r *Runner) RunUpdateFailures() int64 { return atomic.LoadInt64(&r.runUpdat
 func (r *Runner) TaskStatusFailures() int64 { return atomic.LoadInt64(&r.taskStatusFailures) }
 
 func (r *Runner) setTaskStatus(taskID uint, status, errCode, errMsg string) error {
+	if !r.canWriteDB() {
+		return nil
+	}
 	fields := map[string]any{"status": status}
 	if errCode != "" && r.taskHasErrorCols {
 		fields["last_error_code"] = errCode
