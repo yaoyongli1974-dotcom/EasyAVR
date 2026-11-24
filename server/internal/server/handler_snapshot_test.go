@@ -382,3 +382,309 @@ func TestSnapshotPolicyFallbackForUngroupedChannel(t *testing.T) {
 		t.Fatalf("policy fallback list should contain only the ungrouped snapshot: %+v", list)
 	}
 }
+
+func snapshotUserID(t *testing.T, app *App, username string) uint {
+	t.Helper()
+	var u model.User
+	if err := app.db.Where("username = ?", username).First(&u).Error; err != nil {
+		t.Fatalf("find user %s: %v", username, err)
+	}
+	return u.ID
+}
+
+func snapshotRole(t *testing.T, srv *httptest.Server, admin, name, permissions string) {
+	t.Helper()
+	var r apiResp
+	doJSON(t, http.MethodPost, srv.URL+"/api/v1/roles", admin, map[string]any{
+		"name": name, "permissions": permissions,
+	}, &r)
+	if r.Code != 0 {
+		t.Fatalf("create role %s: %+v", name, r)
+	}
+}
+
+// snapshotSignedTokenFromAccessURL goes through the real issuance endpoint and
+// returns the raw token (without the route prefix).
+func snapshotSignedTokenFromAccessURL(t *testing.T, srv *httptest.Server, jwt string, snapID uint) string {
+	t.Helper()
+	var r apiResp
+	code := doJSON(t, http.MethodGet, fmt.Sprintf("%s/api/v1/snapshots/%d/access-url", srv.URL, snapID), jwt, nil, &r)
+	if code != http.StatusOK || r.Code != 0 {
+		t.Fatalf("access-url %d: got %d %+v", snapID, code, r)
+	}
+	var data struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(r.Data, &data); err != nil {
+		t.Fatalf("decode access-url: %v", err)
+	}
+	token := strings.TrimPrefix(data.URL, "/api/v1/snapshot-access/")
+	if token == data.URL {
+		t.Fatalf("unexpected access-url: %q", data.URL)
+	}
+	return token
+}
+
+func snapshotSignedGetWithBearer(t *testing.T, srv *httptest.Server, token, bearer string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/snapshot-access/"+token, nil)
+	if err != nil {
+		t.Fatalf("request signed access: %v", err)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get signed access: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read signed access: %v", err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+func snapshotSignedGet(t *testing.T, srv *httptest.Server, token string) (int, string) {
+	t.Helper()
+	return snapshotSignedGetWithBearer(t, srv, token, "")
+}
+
+func assertSnapshotAccessNoLocalPath(t *testing.T, app *App, body string) {
+	t.Helper()
+	for _, p := range []string{app.snaps.Dir(), filepath.Dir(app.snaps.Dir())} {
+		if strings.Contains(body, p) {
+			t.Fatalf("response leaks local path %q: %q", p, body)
+		}
+	}
+}
+
+// TestSnapshotSignedAccessRevalidatesUser exercises the public signed-access
+// route: the token's user ID, not any request JWT, is reloaded from the DB and
+// its current role/group permissions are rechecked on every request.
+func TestSnapshotSignedAccessRevalidatesUser(t *testing.T) {
+	t.Run("authorized", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		_, chID := newSnapshotChannel(t, app, "signed-ok")
+		snapID := addSnapshotFile(t, app, chID, "ok/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, admin, snapID)
+		if code, body := snapshotSignedGet(t, srv, token); code != http.StatusOK || body != "JPEG:ok/1.jpg" {
+			t.Fatalf("authorized signed access: got %d %q, want 200 JPEG", code, body)
+		}
+	})
+
+	t.Run("tampered token", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		_, chID := newSnapshotChannel(t, app, "signed-tampered")
+		snapID := addSnapshotFile(t, app, chID, "t/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, admin, snapID)
+		parts := strings.Split(token, ".")
+		payload := []byte(parts[0])
+		if payload[3] == 'A' {
+			payload[3] = 'B'
+		} else {
+			payload[3] = 'A'
+		}
+		code, body := snapshotSignedGet(t, srv, string(payload)+"."+parts[1])
+		if code != http.StatusUnauthorized {
+			t.Fatalf("tampered token: got %d, want 401", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+
+	t.Run("expired token", func(t *testing.T) {
+		srv, cfg, app := newSnapshotTestServer(t)
+		_, chID := newSnapshotChannel(t, app, "signed-expired")
+		snapID := addSnapshotFile(t, app, chID, "e/1.jpg")
+		adminID := snapshotUserID(t, app, cfg.AdminUser)
+		expired, _, err := snapshot.SnapshotAccessToken(snapID, adminID, -time.Minute, cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("issue expired token: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, expired)
+		if code != http.StatusUnauthorized {
+			t.Fatalf("expired token: got %d, want 401", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+
+	t.Run("user deleted", func(t *testing.T) {
+		srv, cfg, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		userID, userJWT := snapshotUser(t, srv, admin, "signed-deleted", "admin")
+		_, chID := newSnapshotChannel(t, app, "signed-deleted-ch")
+		snapID := addSnapshotFile(t, app, chID, "d/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, userJWT, snapID)
+		if err := app.db.Delete(&model.User{}, userID).Error; err != nil {
+			t.Fatalf("delete user: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Fatalf("deleted user: got %d, want 401 or 403", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+		// A token with a user ID that never existed is equally rejected.
+		orphan, _, err := snapshot.SnapshotAccessToken(snapID, 999999, time.Minute, cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("issue orphan token: %v", err)
+		}
+		if code, body := snapshotSignedGet(t, srv, orphan); code != http.StatusUnauthorized && code != http.StatusForbidden {
+			t.Fatalf("unknown user: got %d, want 401 or 403 (%s)", code, body)
+		}
+	})
+
+	t.Run("user disabled", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		snapshotRole(t, srv, admin, "signed-video", "video")
+		userID, userJWT := snapshotUser(t, srv, admin, "signed-disabled", "signed-video")
+		_, chID := newSnapshotChannel(t, app, "signed-disabled-ch")
+		snapID := addSnapshotFile(t, app, chID, "disabled/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, userJWT, snapID)
+		if code, _ := snapshotSignedGet(t, srv, token); code != http.StatusOK {
+			t.Fatalf("precondition: token should work while enabled, got %d", code)
+		}
+		if err := app.db.Model(&model.User{}).Where("id = ?", userID).Update("enabled", false).Error; err != nil {
+			t.Fatalf("disable user: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusForbidden {
+			t.Fatalf("disabled user: got %d, want 403", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+
+	t.Run("user removed from device group", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		snapshotRole(t, srv, admin, "signed-limited", "event")
+		userID, userJWT := snapshotUser(t, srv, admin, "signed-grouped", "signed-limited")
+		devID, chID := newSnapshotChannel(t, app, "signed-grouped-ch")
+		gID := snapshotGroup(t, srv, admin, "signed-grouped-group")
+		var r apiResp
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/channels/bind", admin,
+			map[string]any{"groupId": gID, "channelIds": []uint{chID}}, &r)
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/devices/bind", admin,
+			map[string]any{"groupId": gID, "deviceIds": []uint{devID}}, &r)
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/user-groups", admin,
+			map[string]any{"userId": userID, "groupId": gID, "permissions": "video"}, &r)
+		snapID := addSnapshotFile(t, app, chID, "grouped/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, userJWT, snapID)
+		if code, _ := snapshotSignedGet(t, srv, token); code != http.StatusOK {
+			t.Fatalf("precondition: group grant should allow access, got %d", code)
+		}
+		if err := app.db.Where("user_id = ? AND group_id = ?", userID, gID).Delete(&model.UserGroup{}).Error; err != nil {
+			t.Fatalf("remove user group: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusForbidden {
+			t.Fatalf("user removed from group: got %d, want 403", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+
+	t.Run("video permission revoked", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		snapshotRole(t, srv, admin, "signed-revoked", "video")
+		snapshotRole(t, srv, admin, "signed-no-video", "event")
+		userID, userJWT := snapshotUser(t, srv, admin, "signed-revoke-user", "signed-revoked")
+		_, chID := newSnapshotChannel(t, app, "signed-revoke-ch")
+		snapID := addSnapshotFile(t, app, chID, "revoke/1.jpg")
+		token := snapshotSignedTokenFromAccessURL(t, srv, userJWT, snapID)
+		if code, _ := snapshotSignedGet(t, srv, token); code != http.StatusOK {
+			t.Fatalf("precondition: role video permission should allow access, got %d", code)
+		}
+		// Role permissions are read from the DB on every signed request.
+		app.db.Model(&model.Role{}).Where("name = ?", "signed-revoked").Update("permissions", "event")
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusForbidden {
+			t.Fatalf("role lost video permission: got %d, want 403", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+		// Restore the role, then change the user's role: the current DB role
+		// must win over the role embedded in the caller's JWT at issuance.
+		app.db.Model(&model.Role{}).Where("name = ?", "signed-revoked").Update("permissions", "video")
+		app.db.Model(&model.User{}).Where("id = ?", userID).Update("role", "signed-no-video")
+		if code, body := snapshotSignedGet(t, srv, token); code != http.StatusForbidden {
+			t.Fatalf("user changed to role without video: got %d, want 403 (%s)", code, body)
+		}
+	})
+
+	t.Run("another user's token", func(t *testing.T) {
+		srv, cfg, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		snapshotRole(t, srv, admin, "signed-other-limited", "event")
+		userAID, userAJWT := snapshotUser(t, srv, admin, "signed-user-a", "signed-other-limited")
+		userBID, userBJWT := snapshotUser(t, srv, admin, "signed-user-b", "signed-other-limited")
+		devID, chID := newSnapshotChannel(t, app, "signed-other-ch")
+		gID := snapshotGroup(t, srv, admin, "signed-other-group")
+		var r apiResp
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/channels/bind", admin,
+			map[string]any{"groupId": gID, "channelIds": []uint{chID}}, &r)
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/devices/bind", admin,
+			map[string]any{"groupId": gID, "deviceIds": []uint{devID}}, &r)
+		doJSON(t, http.MethodPost, srv.URL+"/api/v1/groups/user-groups", admin,
+			map[string]any{"userId": userAID, "groupId": gID, "permissions": "video"}, &r)
+		snapID := addSnapshotFile(t, app, chID, "other/1.jpg")
+
+		// The token is bound to A (the user who obtained it by signing in).
+		tokenA := snapshotSignedTokenFromAccessURL(t, srv, userAJWT, snapID)
+		if code, _ := snapshotSignedGet(t, srv, tokenA); code != http.StatusOK {
+			t.Fatalf("token bound to authorised user: got %d, want 200", code)
+		}
+		// A token bound to B, who has no grant on this channel, is refused.
+		tokenB, _, err := snapshot.SnapshotAccessToken(snapID, userBID, time.Minute, cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("issue token for B: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, tokenB)
+		if code != http.StatusForbidden {
+			t.Fatalf("token bound to unauthorised user: got %d, want 403", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+		// The public route ignores the request's own JWT: presenting B's JWT
+		// alongside A's token must not change the decision (A is authorised).
+		if code, body := snapshotSignedGetWithBearer(t, srv, tokenA, userBJWT); code != http.StatusOK {
+			t.Fatalf("request JWT must not override token user: got %d (%s)", code, body)
+		}
+	})
+
+	t.Run("snapshot missing", func(t *testing.T) {
+		srv, cfg, app := newSnapshotTestServer(t)
+		adminID := snapshotUserID(t, app, cfg.AdminUser)
+		token, _, err := snapshot.SnapshotAccessToken(999999, adminID, time.Minute, cfg.JWTSecret)
+		if err != nil {
+			t.Fatalf("issue token: %v", err)
+		}
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusNotFound {
+			t.Fatalf("missing snapshot: got %d, want 404", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+
+	t.Run("snapshot file missing", func(t *testing.T) {
+		srv, _, app := newSnapshotTestServer(t)
+		admin := login(t, srv.URL)
+		_, chID := newSnapshotChannel(t, app, "signed-no-file")
+		snap := model.Snapshot{
+			ChannelID: chID,
+			Path:      "gone/1.jpg",
+			URL:       "/snapshots/gone/1.jpg",
+			TakenAt:   time.Now(),
+		}
+		if err := app.db.Create(&snap).Error; err != nil {
+			t.Fatalf("create snapshot row: %v", err)
+		}
+		token := snapshotSignedTokenFromAccessURL(t, srv, admin, snap.ID)
+		code, body := snapshotSignedGet(t, srv, token)
+		if code != http.StatusNotFound {
+			t.Fatalf("missing snapshot file: got %d, want 404", code)
+		}
+		assertSnapshotAccessNoLocalPath(t, app, body)
+	})
+}

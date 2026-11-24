@@ -695,3 +695,9 @@
 - **验证**：`gofmt -l` 干净；`cd server && go test ./...` 全绿、`go vet ./...` 零输出；`bash -n deploy/scripts/*.sh` 全过；合成 env 53 项 + PG stub 14 项备份/轮转/脱敏断言全 PASS；`npm run build` 通过。
 - **当前状态**：完成（分支提交，未推送）
 - **下一步**：第二批 TASK-003 快照签名 URL 实时权限复核。
+
+### 2026-11-24（EASYAVR-TECH-002 第二批：TASK-003 快照实时权限复核）
+- **已完成**：`snapshotSignedAccess` 现在从 HMAC Token 取出 UserID（丢弃该值即拒绝），按数据库当前用户状态（存在/启用/角色）重建 claims，调用现有 `snapshotChannelAllowed` 实时复核通道/设备分组与 video 权限；用户被删除、禁用、移出分组或撤销权限后旧签名 URL 立即失效。文件缺失明确 404，错误不含本地路径，日志不记录完整 Token。
+- **验证**：`gofmt -l` 干净；`cd server && go test ./...` 全绿、`go vet ./...` 零输出；新增 12 项权限矩阵用例（授权/篡改/过期/用户不存在/禁用/分组变更/权限撤销/跨用户 Token/快照不存在/文件缺失/无路径泄露）。
+- **当前状态**：完成（已提交）
+- **下一步**：第三批 TASK-004/005（AI 任务状态一致性与运行记录完整性）。

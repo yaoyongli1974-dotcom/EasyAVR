@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -64,21 +65,46 @@ func (a *App) snapshotAccessURL(c *gin.Context) {
 
 // snapshotSignedAccess serves a snapshot image without a JWT. The signed token
 // carries the snapshot ID, user ID and expiry; the file path always comes from
-// the catalog and is confined to the snapshot storage directory.
+// the catalog and is confined to the snapshot storage directory. Because the
+// route is public, the token's user ID (never request claims) is reloaded from
+// the database and its current role/group permissions are rechecked, so a
+// disabled user or revoked grant invalidates an already issued URL.
 func (a *App) snapshotSignedAccess(c *gin.Context) {
-	id, _, _, err := snapshot.ParseSnapshotAccessToken(c.Param("token"), a.cfg.JWTSecret)
+	id, userID, _, err := snapshot.ParseSnapshotAccessToken(c.Param("token"), a.cfg.JWTSecret)
 	if err != nil {
 		fail(c, http.StatusUnauthorized, "invalid or expired access token")
 		return
 	}
+	if userID == 0 {
+		fail(c, http.StatusUnauthorized, "invalid access token")
+		return
+	}
+	var user model.User
+	if err := a.db.First(&user, userID).Error; err != nil {
+		fail(c, http.StatusUnauthorized, "invalid access token")
+		return
+	}
+	if !user.Enabled {
+		fail(c, http.StatusForbidden, "权限不足：video")
+		return
+	}
+	claims := &auth.Claims{UserID: user.ID, Username: user.Username, Role: user.Role}
 	var snap model.Snapshot
 	if err := a.db.First(&snap, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "snapshot not found")
 		return
 	}
+	if !a.snapshotChannelAllowed(claims, snap.ChannelID) {
+		fail(c, http.StatusForbidden, "权限不足：video")
+		return
+	}
 	path, err := a.snaps.ResolvePath(snap.Path)
 	if err != nil {
 		fail(c, http.StatusForbidden, "invalid snapshot path")
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		fail(c, http.StatusNotFound, "snapshot file not found")
 		return
 	}
 	c.File(path)
