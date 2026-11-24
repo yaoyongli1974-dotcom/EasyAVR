@@ -64,6 +64,33 @@ SPA 必须走 `app` 子域，放根域会让访客撞登录框、且爬虫抓不
 - 首次启动会用 `EASYAVR_ADMIN_USER` / `EASYAVR_ADMIN_PASS` 建管理员，默认值 `easyavr/easyavr`，**部署前必须改**。
 - 公开演示实例务必独立部署、独立数据库、只读账号，不要复用生产库。
 
+### 审计日志中的历史敏感数据排查（TASK-001）
+
+新请求**不再写入原始请求体**（`AuditLog.RequestBody` 字段仅为兼容旧数据保留）。但升级前已写入的审计记录可能含有密码/密钥明文，升级后应人工排查并按数据治理流程处置：
+
+```sql
+-- SQLite（开发库）
+SELECT id, username, path, substr(request_body, 1, 120) AS snippet
+FROM audit_logs
+WHERE lower(request_body) LIKE '%password%' OR lower(request_body) LIKE '%secret%'
+   OR lower(request_body) LIKE '%apikey%' OR lower(request_body) LIKE '%token%'
+ORDER BY id DESC LIMIT 100;
+
+-- PostgreSQL
+SELECT id, username, path, left(request_body, 120) AS snippet
+FROM audit_logs
+WHERE request_body ILIKE ANY (ARRAY['%password%', '%secret%', '%apikey%', '%token%'])
+ORDER BY id DESC LIMIT 100;
+```
+
+确认存在敏感行时：先按「备份与健康检查」做一次完整备份，再由人工执行脱敏（例如 `UPDATE audit_logs SET request_body = '' WHERE ...`），**不要**由自动化任务直接改写历史审计数据。审计写入失败不会中断业务请求，错误以 `[audit] write failed` 前缀写入服务日志（journald），运维可据此监控。
+
+### GB28181 SIP 密钥配置（TASK-004）
+
+- `GET /api/v1/gb/config` 与 `GET /api/v1/config/platform` **不返回密码明文**，只返回 `passwordConfigured` 布尔值；前端只显示「已配置（不回显）/未配置」。
+- 管理员可通过 `PUT /api/v1/gb/config/password`（body `{"password":"..."}`）修改运行中的 SIP 摘要认证密码：对**后续 REGISTER 鉴权立即生效**，无需重启 SIP 服务；已注册设备保持原会话，重新注册时改用新密码。
+- 该修改是**运行期**变更，服务重启后恢复为环境变量 `EASYAVR_GB_PASSWORD` 的值。要持久化，须由人工修改 `/etc/easyavr/env` 并重启服务；自动化流程不得改动生产凭据。
+
 ## 可选组件
 
 ```bash

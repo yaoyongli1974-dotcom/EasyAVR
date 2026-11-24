@@ -583,3 +583,17 @@
   1. 提交本批（前端 4 处修复 + 后端分组一致性 + `EASYAVR_MEDIA_SCHEME` + `deploy/` 未入库文件 + site 响应式改版）。
   2. 域名实名 → HTTPS（`MEDIA_SCHEME=https`）→ Zoho 邮箱。
   3. 快照保留策略、生产磁盘余量（90%）仍是开定时抓图前的前置条件。
+
+### 2026-11-24（EASYAVR-TECH-001 第一批：TASK-001 + TASK-004）
+- **已完成**：
+  - **TASK-001 审计日志脱敏**：`auditLog` 中间件彻底不再读取/恢复请求体，`AuditLog.RequestBody` 仅保留字段兼容旧数据、新记录一律为空；用户 ID/用户名/IP/方法/路径/操作/资源/资源 ID/结果/错误/耗时全部保留。审计写库失败改为以 `[audit] write failed` 前缀记录可监控日志，且不影响业务响应。`deploy/README.md` 增加历史审计数据排查 SQL（SQLite/PG）与人工脱敏流程说明。
+  - **TASK-004 GB28181 SIP 密码泄露**：`/gb/config` 与 `/config/platform` 不再返回 `password`，只返回 `passwordConfigured`；新增管理员专属 `PUT /api/v1/gb/config/password` 做运行期轮换（mutex 保护，后续 REGISTER 立即生效、无需重启 SIP；重启后恢复 `EASYAVR_GB_PASSWORD` 环境变量值）。前端「GB28181 接入」页不再回显密码，改为「已配置（不回显）/未配置」+ 管理员「修改密钥」弹窗。
+- **修改文件**：`server/internal/server/middleware.go`、`server/internal/model/models.go`（仅注释）、`server/internal/server/handler_gb.go`、`server/internal/server/handler_config.go`、`server/internal/server/router.go`、`server/internal/gb28181/server.go`、`web/src/views/GbDevices.vue`、`web/src/api/index.ts`、`README.md`、`AGENTS.md`、`deploy/README.md`；新增测试 `server/internal/server/audit_security_test.go`、`server/internal/server/gb_password_test.go`、`server/internal/gb28181/password_test.go`。
+- **数据库变更**：无（本批未改 schema/字段/索引；SQLite 与 PG 均无迁移动作）。
+- **API 变更**：`GET /api/v1/gb/config` 与 `GET /api/v1/config/platform` 移除 `password` 字段、新增 `passwordConfigured`（破坏性变更，前端已同步）；新增 `PUT /api/v1/gb/config/password`（JWT + 管理员，400/403/200 行为已测）。
+- **验证结果**：`gofmt -l` 无输出；`cd server && go test ./...` 全绿（server 6.786s）；`go vet ./...` 零输出；`go test -race` 针对审计与密码轮换两个包全绿（gb28181 1.015s / server 9.323s）；`cd web && npm run build` 通过（vue-tsc + vite，仅既有 chunk 体积警告）；SQLite schema 核对未变。
+- **尚未解决 / 受限**：
+  1. 历史 `audit_logs.request_body` 中已写入的敏感数据未自动清理，需人工按 `deploy/README.md` 的 SQL 排查并备份后脱敏（本批只做防护与排查工具）。
+  2. 本机 PostgreSQL 是旧快照（22 张表、无 `audit_logs`），且 `easyavr_ro` 只读角色不能执行 AutoMigrate；本批无 schema 变更故兼容性不受影响，但**PG 实际迁移验证尚未执行**（需在可写 PG 环境补测）。
+  3. 未对生产服务器做任何配置/凭据改动；运行期密钥轮换重启后失效属设计约定。
+- **当前状态**：第一批完成并验收，按任务书停止，等待人工审查后再进入第二批（TASK-002/003）。

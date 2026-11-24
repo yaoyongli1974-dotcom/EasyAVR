@@ -6,12 +6,17 @@
     </div>
 
     <el-card v-if="config.enabled" style="margin-bottom: 16px">
-      <template #header>平台 SIP 参数（在设备端填写）</template>
+      <template #header>
+        <div class="sip-card-header">
+          <span>平台 SIP 参数（在设备端填写）</span>
+          <el-button v-if="isAdmin" link type="primary" @click="openPassword">修改密钥</el-button>
+        </div>
+      </template>
       <el-descriptions :column="2" border>
         <el-descriptions-item label="SIP 服务器 ID">{{ config.id }}</el-descriptions-item>
         <el-descriptions-item label="SIP 域 / Realm">{{ config.realm }}</el-descriptions-item>
         <el-descriptions-item label="SIP 监听地址">{{ config.listen }}</el-descriptions-item>
-        <el-descriptions-item label="SIP 密码">{{ config.password }}</el-descriptions-item>
+        <el-descriptions-item label="SIP 密钥">{{ config.passwordConfigured ? '已配置（不回显）' : '未配置' }}</el-descriptions-item>
         <el-descriptions-item label="收流 IP（RTP）">{{ config.rtpIp }}</el-descriptions-item>
         <el-descriptions-item label="已注册设备">{{ config.registered ?? devices.length }}</el-descriptions-item>
       </el-descriptions>
@@ -167,15 +172,31 @@
         <el-button type="primary" @click="saveBlack">保存</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="passwordVisible" title="修改 SIP 密钥" width="480px" @closed="passwordForm.password = ''">
+      <el-form :model="passwordForm" label-width="110px">
+        <el-form-item label="新密钥" required>
+          <el-input v-model="passwordForm.password" type="password" show-password autocomplete="new-password" placeholder="请输入新的 SIP 摘要认证密码" />
+        </el-form-item>
+      </el-form>
+      <p class="sip-hint">保存后立即对后续设备注册生效；已注册设备重新注册时使用新密钥。该修改仅在运行期生效，服务重启后恢复为环境变量中的值。</p>
+      <template #footer>
+        <el-button @click="passwordVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingPassword" @click="savePassword">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { gbApi } from '../api'
+import { useAuthStore } from '../stores/auth'
 import type { GBBlackList, GBCascade, GBDevice, GBWhiteList } from '../types'
+
+const auth = useAuthStore()
+const isAdmin = computed(() => auth.user?.role === 'admin')
 
 const router = useRouter()
 function goConfig() {
@@ -193,6 +214,9 @@ const loading = ref(false)
 const cascadeVisible = ref(false)
 const whiteVisible = ref(false)
 const blackVisible = ref(false)
+const passwordVisible = ref(false)
+const savingPassword = ref(false)
+const passwordForm = reactive<{ password: string }>({ password: '' })
 const cascadeForm = reactive<Partial<GBCascade> & { password?: string }>({ targetPort: 5060, enabled: true })
 const whiteForm = reactive<Partial<GBWhiteList> & { password?: string }>({ protocol: 'GB28181' })
 const blackForm = reactive<Partial<GBBlackList>>({ protocol: 'GB28181' })
@@ -214,6 +238,31 @@ async function load() {
     blacklist.value = bl
   } finally {
     loading.value = false
+  }
+}
+
+function openPassword() {
+  passwordForm.password = ''
+  passwordVisible.value = true
+}
+async function savePassword() {
+  const password = passwordForm.password.trim()
+  if (!password) {
+    ElMessage.warning('请输入新的 SIP 密钥')
+    return
+  }
+  savingPassword.value = true
+  try {
+    await gbApi.setPassword(password)
+    ElMessage.success('密钥已更新，立即生效；服务重启后恢复为环境变量值')
+    passwordVisible.value = false
+    passwordForm.password = ''
+    load()
+  } catch (e: any) {
+    const status = e?.response?.status
+    ElMessage.error(status === 403 ? '需要管理员权限' : (e?.response?.data?.message || '保存失败'))
+  } finally {
+    savingPassword.value = false
   }
 }
 
@@ -295,3 +344,18 @@ function format(t: string) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.sip-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sip-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+</style>

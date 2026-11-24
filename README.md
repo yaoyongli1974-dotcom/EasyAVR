@@ -109,6 +109,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
   - 海康 ISAPI：`/ISAPI/System/deviceInfo` + `/ISAPI/Streaming/channels`（HTTP Digest，官方公开接口，纯 Go）。
 - **GB28181 接入**：启动时设置 `EASYAVR_GB_ENABLED=true`。设备 REGISTER 后平台自动查询
   通道目录并建通道；点播时平台向设备发 INVITE，媒体由 ZLMediaKit 接收。Web 端见「GB28181 接入」页。
+  平台 SIP 密钥不在配置接口回显（仅显示「已配置/未配置」）；管理员可通过 `PUT /api/v1/gb/config/password` 运行期轮换，重启后恢复环境变量值。
 - **录像回看**：通道启停录像、按日期同步与回放/下载；支持按天/时段自动录像计划与保留期清理。见「录像回看」页。
 - **快照中心**：手动/定时抓拍（依赖 ffmpeg），按通道浏览、配置抓拍间隔。见「快照中心」页。
 

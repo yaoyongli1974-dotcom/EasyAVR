@@ -650,6 +650,6 @@ type AuditLog struct {
 	ResourceID  string `gorm:"size:64;index" json:"resourceId"` // target ID
 	Result      string `gorm:"size:16;index" json:"result"`     // success, failed
 	ErrorMsg    string `gorm:"size:512" json:"errorMsg"`        // error detail if failed
-	RequestBody string `gorm:"type:text" json:"requestBody"`    // request payload (JSON)
+	RequestBody string `gorm:"type:text" json:"requestBody"`    // legacy field; new audit entries never populate it (may contain secrets)
 	LatencyMs   int64  `json:"latencyMs"`                       // request latency
 }

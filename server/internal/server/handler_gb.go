@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,17 +16,49 @@ func (a *App) listGBDevices(c *gin.Context) {
 	ok(c, devices)
 }
 
+// gbPasswordConfigured reports whether a non-empty SIP digest password is in
+// effect. The password itself is never exposed over the API.
+func (a *App) gbPasswordConfigured() bool {
+	return strings.TrimSpace(a.gb.Password()) != ""
+}
+
 // gbConfig exposes the platform SIP parameters needed to configure devices.
 func (a *App) gbConfig(c *gin.Context) {
 	ok(c, gin.H{
-		"enabled":    a.settingBool("gb_enabled", a.cfg.GB.Enabled),
-		"running":    a.gb.Running(),
-		"id":         a.cfg.GB.ID,
-		"realm":      a.cfg.GB.Realm,
-		"listen":     a.cfg.GB.Listen,
-		"password":   a.cfg.GB.Password,
-		"rtpIp":      a.cfg.GB.RTPIP,
-		"registered": a.gb.RegisteredCount(),
+		"enabled":            a.settingBool("gb_enabled", a.cfg.GB.Enabled),
+		"running":            a.gb.Running(),
+		"id":                 a.cfg.GB.ID,
+		"realm":              a.cfg.GB.Realm,
+		"listen":             a.cfg.GB.Listen,
+		"passwordConfigured": a.gbPasswordConfigured(),
+		"rtpIp":              a.cfg.GB.RTPIP,
+		"registered":         a.gb.RegisteredCount(),
+	})
+}
+
+// updateGBPassword rotates the SIP digest password for subsequent REGISTERs.
+// The value lives in memory only; restarting restores EASYAVR_GB_PASSWORD.
+func (a *App) updateGBPassword(c *gin.Context) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "请求体格式错误")
+		return
+	}
+	pw := strings.TrimSpace(req.Password)
+	if pw == "" {
+		fail(c, http.StatusBadRequest, "密码不能为空")
+		return
+	}
+	if utf8.RuneCountInString(pw) > 128 {
+		fail(c, http.StatusBadRequest, "密码长度不能超过 128 个字符")
+		return
+	}
+	a.gb.SetPassword(pw)
+	ok(c, gin.H{
+		"updated": true,
+		"note":    "密码已即时生效（仅内存），服务重启后将恢复环境变量 EASYAVR_GB_PASSWORD 的值",
 	})
 }
 

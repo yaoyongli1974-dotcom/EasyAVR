@@ -1,9 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,37 +84,28 @@ func (a *App) auditLog() gin.HandlerFunc {
 		action := inferAction(c.Request.Method, path)
 		resource := inferResource(path)
 		resourceID := inferResourceID(c)
-		// Request body (skip for GET, limit size)
-		var reqBody string
-		var body []byte
-		if c.Request.Method != http.MethodGet && c.Request.Body != nil {
-			var err error
-			body, err = io.ReadAll(c.Request.Body)
-			if err == nil && len(body) > 0 {
-				if len(body) > 2048 {
-					reqBody = string(body[:2048]) + "..."
-				} else {
-					reqBody = string(body)
-				}
-			}
-			// Restore body for downstream handlers
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+		// Never read or persist the request body: it may contain credentials or
+		// other secrets, and the body must reach downstream handlers untouched.
+		// AuditLog.RequestBody is kept only for backward compatibility and is
+		// always empty for new entries.
+		entry := model.AuditLog{
+			UserID:     userID,
+			Username:   username,
+			IP:         c.ClientIP(),
+			Method:     c.Request.Method,
+			Path:       path,
+			Action:     action,
+			Resource:   resource,
+			ResourceID: resourceID,
+			Result:     result,
+			ErrorMsg:   errorMsg,
+			LatencyMs:  time.Since(start).Milliseconds(),
 		}
-
-		a.db.Create(&model.AuditLog{
-			UserID:      userID,
-			Username:    username,
-			IP:          c.ClientIP(),
-			Method:      c.Request.Method,
-			Path:        path,
-			Action:      action,
-			Resource:    resource,
-			ResourceID:  resourceID,
-			Result:      result,
-			ErrorMsg:    errorMsg,
-			RequestBody: reqBody,
-			LatencyMs:   time.Since(start).Milliseconds(),
-		})
+		// Audit failures must never fail the business request.
+		if err := a.db.Create(&entry).Error; err != nil {
+			log.Printf("[audit] write failed: method=%s path=%s status=%d userID=%d err=%v",
+				entry.Method, entry.Path, status, entry.UserID, err)
+		}
 	}
 }
 

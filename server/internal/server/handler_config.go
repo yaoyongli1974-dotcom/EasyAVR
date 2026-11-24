@@ -56,13 +56,13 @@ func (a *App) gb35114Listen() string {
 func (a *App) platformConfig(c *gin.Context) {
 	ok(c, gin.H{
 		"gb": gin.H{
-			"enabled":  a.settingBool("gb_enabled", a.cfg.GB.Enabled),
-			"running":  a.gb.Running(),
-			"listen":   a.cfg.GB.Listen,
-			"id":       a.cfg.GB.ID,
-			"realm":    a.cfg.GB.Realm,
-			"password": a.cfg.GB.Password,
-			"rtpIp":    a.cfg.GB.RTPIP,
+			"enabled":            a.settingBool("gb_enabled", a.cfg.GB.Enabled),
+			"running":            a.gb.Running(),
+			"listen":             a.cfg.GB.Listen,
+			"id":                 a.cfg.GB.ID,
+			"realm":              a.cfg.GB.Realm,
+			"passwordConfigured": a.gbPasswordConfigured(),
+			"rtpIp":              a.cfg.GB.RTPIP,
 		},
 		"ehome": gin.H{
 			"enabled":   a.settingBool("ehome_enabled", a.cfg.EHOME.Enabled),

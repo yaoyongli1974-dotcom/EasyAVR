@@ -307,6 +307,7 @@ export const snapshotApi = {
 export const gbApi = {
   devices: () => unwrap<GBDevice[]>(client.get('/gb/devices')),
   config: () => unwrap<Record<string, any>>(client.get('/gb/config')),
+  setPassword: (password: string) => unwrap<Record<string, any>>(client.put('/gb/config/password', { password })),
   refresh: (gbid: string) => unwrap<{ deviceId: string }>(client.post(`/gb/devices/${gbid}/refresh`)),
 
   cascades: () => unwrap<GBCascade[]>(client.get('/gb/cascades')),

@@ -34,6 +34,9 @@ type Server struct {
 	db  *gorm.DB
 	zlm *video.Client
 
+	pwdMu    sync.RWMutex
+	password string // effective digest password; rotatable at runtime
+
 	conn    *net.UDPConn
 	tlsLn   net.Listener
 	tlsAddr string
@@ -140,11 +143,34 @@ func NewServer(cfg config.GBConfig, db *gorm.DB, zlm *video.Client) *Server {
 		cfg:      cfg,
 		db:       db,
 		zlm:      zlm,
+		password: cfg.Password,
 		sessions: map[string]*session{},
 		pending:  map[string]chan *Message{},
 		streams:  map[uint]*liveStream{},
 		cascades: map[uint]context.CancelFunc{},
 	}
+}
+
+// Password returns the currently effective SIP digest password. It is safe on a
+// nil receiver so callers can use it without checking for a disabled server.
+func (s *Server) Password() string {
+	if s == nil {
+		return ""
+	}
+	s.pwdMu.RLock()
+	defer s.pwdMu.RUnlock()
+	return s.password
+}
+
+// SetPassword rotates the in-memory digest password. It takes effect for the
+// next REGISTER and is not persisted: a restart restores the configured value.
+func (s *Server) SetPassword(pw string) {
+	if s == nil {
+		return
+	}
+	s.pwdMu.Lock()
+	s.password = pw
+	s.pwdMu.Unlock()
 }
 
 // Start binds the UDP socket and begins serving. It is non-blocking.
@@ -361,7 +387,7 @@ func (s *Server) handleRegister(msg *Message, peer *Peer) {
 		deviceID = userPart(msg.Get("From"))
 	}
 	auth := msg.Get("Authorization")
-	if auth == "" || !VerifyDigest(auth, "REGISTER", s.cfg.Realm, s.cfg.Password) {
+	if auth == "" || !VerifyDigest(auth, "REGISTER", s.cfg.Realm, s.Password()) {
 		resp := msg.Response(401, "Unauthorized")
 		nonce := fmt.Sprintf("%d", time.Now().UnixNano())
 		resp.Add("WWW-Authenticate", fmt.Sprintf(

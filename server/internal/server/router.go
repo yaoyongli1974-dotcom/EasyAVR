@@ -207,6 +207,11 @@ func (a *App) buildRouter() *gin.Engine {
 	gbGroup.POST("/blacklist", a.createBlackList)
 	gbGroup.DELETE("/blacklist/:id", a.deleteBlackList)
 
+	// SIP 密码轮换属于管理员操作，单独分组做管理员校验，不影响上面的 GB 策略。
+	gbAdminGroup := authed.Group("/gb")
+	gbAdminGroup.Use(a.adminRequired())
+	gbAdminGroup.PUT("/config/password", a.updateGBPassword)
+
 	ga1400Group := authed.Group("/ga1400")
 	ga1400Group.Use(a.requirePolicy("ga1400", "*", nil))
 	ga1400Group.GET("/cascades", a.listGACascades)
