@@ -101,55 +101,21 @@ func (a *App) snapshotSignedAccess(c *gin.Context) {
 		fail(c, http.StatusForbidden, "权限不足：video")
 		return
 	}
-	path, err := a.snaps.ResolvePath(snap.Path)
+	f, err := a.snaps.OpenSnapshot(snap.Path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fail(c, http.StatusNotFound, "snapshot file not found")
-			return
-		}
-		fail(c, http.StatusForbidden, "invalid snapshot path")
+		a.failSnapshotFileError(c, err)
 		return
 	}
-	a.serveSnapshotFile(c, path)
+	a.serveSnapshotFile(c, snap.Path, f)
 }
 
-// serveSnapshotFile streams an already-canonicalised snapshot path from an
-// open handle. ResolvePath removed every symlink component with EvalSymlinks;
-// the Lstat checks around Open detect a path swapped for a symlink in the
-// check/use window. The path is never handed back to c.File, which would
-// re-resolve it and could follow a freshly planted symlink. O_NOFOLLOW is not
-// referenced here because syscall.O_NOFOLLOW is Unix-only; this variant stays
-// pure Go and builds on Windows. On Unix the post-open Lstat/SameFile pair
-// gives equivalent protection for the final component.
-func (a *App) serveSnapshotFile(c *gin.Context, path string) {
-	before, err := os.Lstat(path)
-	if err != nil {
-		a.failSnapshotFileError(c, err)
-		return
-	}
-	if before.Mode()&os.ModeSymlink != 0 {
-		fail(c, http.StatusForbidden, "invalid snapshot path")
-		return
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fail(c, http.StatusNotFound, "snapshot file not found")
-			return
-		}
-		fail(c, http.StatusForbidden, "invalid snapshot path")
-		return
-	}
-	defer f.Close()
-	after, err := os.Lstat(path)
-	if err != nil {
-		a.failSnapshotFileError(c, err)
-		return
-	}
-	if !os.SameFile(before, after) || after.Mode()&os.ModeSymlink != 0 {
-		fail(c, http.StatusForbidden, "invalid snapshot path")
-		return
-	}
+// serveSnapshotFile streams a snapshot from the handle returned by
+// OpenSnapshot. The catalog path is only used for the Content-Disposition
+// name; it is never reopened or passed to c.File (which would re-resolve a
+// parent directory that may have been swapped in the meantime). The handle
+// stays valid even if the file is replaced or removed while it is served.
+func (a *App) serveSnapshotFile(c *gin.Context, rel string, f *os.File) {
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "snapshot read error")
@@ -159,7 +125,7 @@ func (a *App) serveSnapshotFile(c *gin.Context, path string) {
 		fail(c, http.StatusForbidden, "invalid snapshot path")
 		return
 	}
-	http.ServeContent(c.Writer, c.Request, filepath.Base(path), info.ModTime(), f)
+	http.ServeContent(c.Writer, c.Request, filepath.Base(rel), info.ModTime(), f)
 }
 
 func (a *App) failSnapshotFileError(c *gin.Context, err error) {

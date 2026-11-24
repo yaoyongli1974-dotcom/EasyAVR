@@ -4,9 +4,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -288,5 +292,318 @@ func TestResolvePathConcurrentDeleteAndAccess(t *testing.T) {
 	}
 	if leaked.Load() != 0 {
 		t.Fatalf("resolved path escaped the root %d times", leaked.Load())
+	}
+}
+
+// readOpenSnapshotHandle reads through the handle returned by OpenSnapshot.
+// It is goroutine-safe (unlike t.Fatal helpers used by the callers).
+func readOpenSnapshotHandle(s *Service, rel string) (string, error) {
+	f, err := s.OpenSnapshot(rel)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func raceMarkers() (inner, outside string) {
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	return "INNER-" + stamp, "OUTSIDE-" + stamp
+}
+
+func assertOpenSnapshotOutside(t *testing.T, s *Service, dir, rel string) {
+	t.Helper()
+	f, err := s.OpenSnapshot(rel)
+	if err == nil {
+		_ = f.Close()
+		t.Fatalf("OpenSnapshot(%q) unexpectedly succeeded", rel)
+	}
+	if !errors.Is(err, ErrPathOutside) {
+		t.Fatalf("OpenSnapshot(%q): got %v, want ErrPathOutside", rel, err)
+	}
+	assertNoAbsPath(t, dir, err.Error())
+}
+
+func TestOpenSnapshotRejectsParentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	outsideDir := t.TempDir()
+	_, outside := raceMarkers()
+	if err := os.WriteFile(filepath.Join(outsideDir, "1.jpg"), []byte(outside), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "12"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "12")); err != nil {
+		t.Fatalf("remove dir: %v", err)
+	}
+	symlinkOrSkip(t, outsideDir, filepath.Join(dir, "12"))
+	assertOpenSnapshotOutside(t, s, dir, filepath.Join("12", "1.jpg"))
+}
+
+func TestOpenSnapshotRejectsFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	outside := filepath.Join(t.TempDir(), "secret.jpg")
+	if err := os.WriteFile(outside, []byte("TOP-SECRET"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(dir, "link.jpg"))
+	assertOpenSnapshotOutside(t, s, dir, "link.jpg")
+}
+
+func TestOpenSnapshotRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	base := filepath.Base(dir)
+	for _, rel := range []string{
+		"",
+		".",
+		"..",
+		"../outside.jpg",
+		"12/../../../outside.jpg",
+		"../" + base + "-evil/secret.jpg",
+		filepath.Join(dir, "1.jpg"),
+	} {
+		assertOpenSnapshotOutside(t, s, dir, rel)
+	}
+}
+
+func TestOpenSnapshotRejectsMagicLink(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("magic-link handling is Linux-specific")
+	}
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	outside := filepath.Join(t.TempDir(), "secret.jpg")
+	if err := os.WriteFile(outside, []byte("MAGIC-SECRET"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	f, err := os.Open(outside)
+	if err != nil {
+		t.Fatalf("open outside fd: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	magic := "/proc/self/fd/" + strconv.Itoa(int(f.Fd()))
+	if info, err := os.Lstat(magic); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Skipf("magic link unavailable at %s: %v", magic, err)
+	}
+	symlinkOrSkip(t, magic, filepath.Join(dir, "magic.jpg"))
+	assertOpenSnapshotOutside(t, s, dir, "magic.jpg")
+}
+
+// TestOpenSnapshotParentSwapRace repeatedly replaces a parent directory with
+// a symlink to a directory holding a uniquely marked file outside the root.
+// Readers that get a handle must never observe the outside marker.
+func TestOpenSnapshotParentSwapRace(t *testing.T) {
+	// The writer needs symlinks throughout the race; skip where unavailable.
+	symlinkOrSkip(t, "target", filepath.Join(t.TempDir(), "probe-link"))
+	dir := t.TempDir()
+	base := t.TempDir()
+	s := NewService(nil, nil, dir)
+	inner, outside := raceMarkers()
+	safeDir := filepath.Join(base, "safe")
+	evilDir := filepath.Join(base, "evil")
+	link := filepath.Join(dir, "12")
+	for _, d := range []string{safeDir, evilDir} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(safeDir, "1.jpg"), []byte(inner), 0o644); err != nil {
+		t.Fatalf("write inner: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evilDir, "1.jpg"), []byte(outside), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	recreateSafe := func() error {
+		if err := os.Mkdir(safeDir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(safeDir, "1.jpg"), []byte(inner), 0o644)
+	}
+	// Precondition: a real parent directory serves the inner file.
+	if err := os.Rename(safeDir, link); err != nil {
+		t.Fatalf("install safe dir: %v", err)
+	}
+	if got, err := readOpenSnapshotHandle(s, filepath.Join("12", "1.jpg")); err != nil || got != inner {
+		t.Fatalf("precondition: got %q/%v, want %q", got, err, inner)
+	}
+
+	const iterations = 1500
+	var leaked, opened, writerErr atomic.Int64
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := readOpenSnapshotHandle(s, filepath.Join("12", "1.jpg"))
+				if err == nil {
+					opened.Add(1)
+					if strings.Contains(got, outside) {
+						leaked.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	for i := 0; i < iterations; i++ {
+		if err := os.RemoveAll(link); err != nil {
+			writerErr.Add(1)
+			break
+		}
+		if err := os.Symlink(evilDir, link); err != nil {
+			writerErr.Add(1)
+			break
+		}
+		if err := os.Remove(link); err != nil {
+			writerErr.Add(1)
+			break
+		}
+		if err := recreateSafe(); err != nil {
+			writerErr.Add(1)
+			break
+		}
+		if err := os.Rename(safeDir, link); err != nil {
+			writerErr.Add(1)
+			break
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if writerErr.Load() != 0 {
+		t.Fatalf("parent swap setup failed %d times", writerErr.Load())
+	}
+	if opened.Load() == 0 {
+		t.Fatal("no snapshot was opened during the parent swap race")
+	}
+	if leaked.Load() != 0 {
+		t.Fatalf("read outside-root content %d times during parent swap race", leaked.Load())
+	}
+}
+
+// TestOpenSnapshotFileReplacementRace swaps the final component between a
+// regular file and a symlink to a uniquely marked outside file while readers
+// open it. Any successful read must come from an already-opened inner inode.
+func TestOpenSnapshotFileReplacementRace(t *testing.T) {
+	// The writer needs symlinks throughout the race; skip where unavailable.
+	symlinkOrSkip(t, "target", filepath.Join(t.TempDir(), "probe-link"))
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	inner, outside := raceMarkers()
+	outsideFile := filepath.Join(t.TempDir(), "secret.jpg")
+	if err := os.WriteFile(outsideFile, []byte(outside), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	path := filepath.Join(dir, "1.jpg")
+	if err := os.WriteFile(path, []byte(inner), 0o644); err != nil {
+		t.Fatalf("write inner: %v", err)
+	}
+	if got, err := readOpenSnapshotHandle(s, "1.jpg"); err != nil || got != inner {
+		t.Fatalf("precondition: got %q/%v, want %q", got, err, inner)
+	}
+
+	const iterations = 1500
+	var leaked, opened, writerErr atomic.Int64
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				got, err := readOpenSnapshotHandle(s, "1.jpg")
+				if err == nil {
+					opened.Add(1)
+					if strings.Contains(got, outside) {
+						leaked.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	tmp := filepath.Join(dir, ".inner.tmp")
+	for i := 0; i < iterations; i++ {
+		_ = os.Remove(path)
+		var err error
+		if i%2 == 0 {
+			// Publish the regular file atomically so a reader never sees a
+			// half-written file; the only interesting race is the swap itself.
+			if err = os.WriteFile(tmp, []byte(inner), 0o644); err == nil {
+				err = os.Rename(tmp, path)
+			}
+		} else {
+			err = os.Symlink(outsideFile, path)
+		}
+		if err != nil {
+			writerErr.Add(1)
+			break
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if writerErr.Load() != 0 {
+		t.Fatalf("file replacement setup failed %d times", writerErr.Load())
+	}
+	if opened.Load() == 0 {
+		t.Fatal("no snapshot was opened during the file replacement race")
+	}
+	if leaked.Load() != 0 {
+		t.Fatalf("read outside-root content %d times during file replacement race", leaked.Load())
+	}
+}
+
+func TestOpenSnapshotRegularFileOnly(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(nil, nil, dir)
+	if err := os.Mkdir(filepath.Join(dir, "folder"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	assertOpenSnapshotOutside(t, s, dir, "folder")
+
+	// A FIFO is a non-regular file. mkfifo is only available on Unix; a
+	// missing utility is a skip, not a false pass.
+	if runtime.GOOS == "linux" {
+		if _, err := exec.LookPath("mkfifo"); err == nil {
+			fifo := filepath.Join(dir, "pipe")
+			out, err := exec.Command("mkfifo", fifo).CombinedOutput()
+			if err != nil {
+				t.Skipf("mkfifo failed: %v (%s)", err, strings.TrimSpace(string(out)))
+			}
+			assertOpenSnapshotOutside(t, s, dir, "pipe")
+		} else {
+			t.Skip("mkfifo unavailable: FIFO case skipped")
+		}
+	}
+
+	// A normal nested relative path still works.
+	if err := os.MkdirAll(filepath.Join(dir, "12"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "12", "34.jpg"), []byte("JPEG"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got, err := readOpenSnapshotHandle(s, filepath.Join("12", "34.jpg")); err != nil || got != "JPEG" {
+		t.Fatalf("normal path: got %q/%v, want JPEG", got, err)
+	}
+	if _, err := s.OpenSnapshot("12/gone.jpg"); !errors.Is(err, ErrPathNotFound) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing file: got %v, want ErrPathNotFound/fs.ErrNotExist", err)
 	}
 }

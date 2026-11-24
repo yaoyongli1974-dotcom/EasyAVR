@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/model"
 	"github.com/easyavr/easyavr/internal/snapshot"
@@ -840,5 +842,43 @@ func TestSnapshotSignedAccessConcurrentDelete(t *testing.T) {
 	}
 	if bad.Load() != 0 {
 		t.Fatalf("unexpected responses during concurrent access: %d", bad.Load())
+	}
+}
+
+// TestSnapshotHTTPUsesOpenedHandle proves the HTTP layer serves bytes from the
+// handle returned by OpenSnapshot: after the catalog path is replaced with a
+// different file, responding with that handle still yields the original data.
+func TestSnapshotHTTPUsesOpenedHandle(t *testing.T) {
+	srv, _, app := newSnapshotTestServer(t)
+	admin := login(t, srv.URL)
+	_, chID := newSnapshotChannel(t, app, "opened-handle")
+	snapID := addSnapshotFile(t, app, chID, "h/1.jpg")
+	token := snapshotSignedTokenFromAccessURL(t, srv, admin, snapID)
+	if code, body := snapshotSignedGet(t, srv, token); code != http.StatusOK || body != "JPEG:h/1.jpg" {
+		t.Fatalf("precondition: got %d %q, want 200 JPEG:h/1.jpg", code, body)
+	}
+
+	f, err := app.snaps.OpenSnapshot("h/1.jpg")
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	full := filepath.Join(app.snaps.Dir(), "h", "1.jpg")
+	if err := os.Remove(full); err != nil {
+		t.Fatalf("remove original: %v", err)
+	}
+	if err := os.WriteFile(full, []byte("REPLACED"), 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/snapshot-access/"+token, nil)
+	app.serveSnapshotFile(c, "h/1.jpg", f)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("serve from opened handle: got %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "JPEG:h/1.jpg" {
+		t.Fatalf("served %q, want bytes from the already-opened handle", body)
 	}
 }

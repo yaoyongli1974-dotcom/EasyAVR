@@ -421,8 +421,65 @@ func ParseSnapshotAccessToken(token, secret string) (uint, uint, time.Time, erro
 	return p.ID, p.UserID, expires, nil
 }
 
+// OpenSnapshot opens a catalog-relative snapshot path for reading and returns
+// the already-opened file. Unlike ResolvePath, it never hands a path back to
+// the caller: the platform layer resolves the name from a pinned root
+// directory fd in one operation, so replacing a parent directory (or the final
+// component) after the check cannot redirect the read outside the snapshot
+// root. Only regular files are returned; all errors use the fixed
+// ErrPathOutside / ErrPathNotFound sentinels and never contain local paths.
+func (s *Service) OpenSnapshot(rel string) (*os.File, error) {
+	if !validSnapshotRelativePath(rel) {
+		return nil, ErrPathOutside
+	}
+	root, err := newSnapshotRoot(s.dir)
+	if err != nil {
+		return nil, ErrPathOutside
+	}
+	defer func() { _ = root.close() }()
+
+	f, err := root.open(rel)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, ErrPathOutside
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, ErrPathOutside
+	}
+	return f, nil
+}
+
+// validSnapshotRelativePath performs the lexical checks that both the strict
+// Linux path and the portable fallback rely on. A path that leaves the root
+// syntactically is never passed to the platform layer.
+func validSnapshotRelativePath(rel string) bool {
+	if rel == "" || filepath.IsAbs(rel) {
+		return false
+	}
+	clean := filepath.Clean(rel)
+	return clean != "." && clean != ".." && !strings.HasPrefix(clean, ".."+string(os.PathSeparator))
+}
+
+// snapshotOpenError maps platform open failures onto the two public
+// sentinels. Only a genuinely missing file is ErrPathNotFound; escapes,
+// symlinks, magic links, permissions and all other failures are ErrPathOutside
+// so the HTTP layer answers 403 rather than pretending the file vanished.
+func snapshotOpenError(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return ErrPathNotFound
+	}
+	return ErrPathOutside
+}
+
 // ResolvePath converts a catalog-relative snapshot path to its canonical,
-// symlink-free absolute path inside the storage directory. It rejects empty
+// symlink-free absolute path inside the storage directory. It is retained for
+// non-read paths such as retention cleanup; reads must use OpenSnapshot so the
+// check and the open cannot be separated. It rejects empty
 // and absolute paths, traversal (including sibling directories with a
 // matching prefix) and any symlink — including multi-level chains — whose
 // resolved target escapes the snapshot root. A missing path returns

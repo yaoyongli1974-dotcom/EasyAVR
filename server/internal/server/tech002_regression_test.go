@@ -416,7 +416,23 @@ func tech002WaitRuns(t *testing.T, db *gorm.DB, taskID uint, want int) []model.A
 	for time.Now().Before(deadline) {
 		runs := tech002RunCount(t, db, taskID)
 		if len(runs) >= want {
-			return runs
+			// The run row is created before analysis starts, so a non-terminal
+			// row is not proof that the execution finished. Wait for the
+			// terminal state to avoid a race-dependent assertion in callers.
+			allTerminal := true
+			for _, run := range runs[:want] {
+				switch run.Status {
+				case ai.RunSucceeded, ai.RunFailed, ai.RunTimeout, ai.RunStopped:
+					if run.FinishedAt == nil {
+						allTerminal = false
+					}
+				default:
+					allTerminal = false
+				}
+			}
+			if allTerminal {
+				return runs
+			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
