@@ -111,7 +111,8 @@ func (a *App) markRecording(c *gin.Context) {
 // cleanupRecordings enforces the retention policy (手册 3.7.2.1 录像存储阈值).
 // days>0 applies a window to every channel, otherwise each channel plan's
 // RetentionDays decides. files=1 (default) also deletes the day folders on the
-// media core; files=0 only prunes the catalog.
+// media core; files=0 only prunes the catalog. Protected entries are reported
+// per reason so the operator can see why a recording survived.
 func (a *App) cleanupRecordings(c *gin.Context) {
 	days, _ := strconv.Atoi(c.Query("days"))
 	deleteFiles := c.Query("files") != "0"
@@ -120,7 +121,37 @@ func (a *App) cleanupRecordings(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, gin.H{"removed": removed, "filesDeleted": deleteFiles})
+	stat := a.rec.LastCleanup()
+	ok(c, gin.H{
+		"deleted":      removed,
+		"removed":      removed, // legacy alias
+		"skipped":      stat.Skipped,
+		"filesDeleted": deleteFiles,
+	})
+}
+
+// consistencyReport is a read-only catalog vs. ZLM comparison.
+func (a *App) consistencyReport(c *gin.Context) {
+	missing, orphan, err := a.rec.Consistency()
+	if err != nil {
+		fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	ok(c, gin.H{"missing": missing, "orphan": orphan})
+}
+
+// recordingCapacity reports local and archived byte totals.
+func (a *App) recordingCapacity(c *gin.Context) {
+	total, local, archived, err := a.rec.Capacity()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, gin.H{
+		"totalBytes":    total,
+		"localBytes":    local,
+		"archivedBytes": archived,
+	})
 }
 
 func (a *App) getRecordingPlan(c *gin.Context) {

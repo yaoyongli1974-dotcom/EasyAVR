@@ -57,11 +57,20 @@ import type {
   PTZPreset,
   Recording,
   RecordingArchive,
+  RecordingCapacity,
+  RecordingConsistency,
   RecordingPlan,
   Role,
   SearchHit,
   Snapshot,
+  SnapshotCleanupResult,
+  SnapshotRetention,
+  SnapshotRetentionUpdate,
   StatusLog,
+  StorageAlert,
+  StorageAlerts,
+  StorageHealth,
+  StorageUsage,
   TrackPoint,
   TrackStats,
   TrainingJob,
@@ -252,6 +261,9 @@ export const eventApi = {
 
 export const systemApi = {
   info: () => unwrap<Record<string, any>>(client.get('/system/info')),
+  storageHealth: () => unwrap<StorageHealth>(client.get('/storage/health')),
+  storageUsage: () => unwrap<StorageUsage>(client.get('/storage/usage')),
+  storageAlerts: () => unwrap<StorageAlerts>(client.get('/storage/alerts')),
 }
 
 export const configApi = {
@@ -276,6 +288,8 @@ export const recordingApi = {
     unwrap<RecordingArchive>(client.post(`/recordings/${id}/archive`, { storeId })),
   archives: (id: number) => unwrap<RecordingArchive[]>(client.get(`/recordings/${id}/archives`)),
   cleanup: (days = 0) => unwrap<{ removed: number }>(client.post('/recordings/cleanup', null, { params: { days } })),
+  consistency: () => unwrap<RecordingConsistency>(client.get('/recording-consistency')),
+  capacity: () => unwrap<RecordingCapacity>(client.get('/recording-capacity')),
 }
 
 export const transcodeApi = {
@@ -320,6 +334,10 @@ export const snapshotApi = {
     unwrap<{ url: string; expiresAt: string | number }>(
       client.get(`/snapshots/${id}/access-url`, { params: url ? { url } : undefined }),
     ),
+  retention: () => unwrap<SnapshotRetention>(client.get('/snapshot-retention')),
+  updateRetention: (body: SnapshotRetentionUpdate) =>
+    unwrap<SnapshotRetention>(client.put('/snapshot-retention', body)),
+  cleanup: () => unwrap<SnapshotCleanupResult>(client.post('/snapshot-cleanup')),
 }
 
 /** Minimal shape needed to turn a stored snapshot path into a displayable src. */

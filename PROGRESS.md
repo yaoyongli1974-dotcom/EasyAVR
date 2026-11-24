@@ -654,3 +654,12 @@
 - **验证通过**：`gofmt -l` 无输出；`go build ./...`、`go test ./...`（新增 runner 单测覆盖重复 Start/取消/超时/并发上限/pending/退避/错误分类/Recover 与三条新 API，均不依赖真实 ZLM/ffmpeg）、`go vet ./...` 全绿；`cd web && npm run build`（vue-tsc + vite）通过，仅既有 chunk 体积警告。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：等待人工审查后再进入第五批（TASK-008/009/010 快照/录像生命周期与磁盘监控）；真机验证自动恢复与并发限额行为。
+
+### 2026-11-24（EASYAVR-TECH-001 第五批：TASK-008/009/010）
+- **已完成**：
+  - TASK-008 快照保留期：`snapshot.Service` 新增 RetentionConfig/SetRetention/Cleanup/RetentionStats/StartCleanupScheduler；按 TakenAt 过期，AIEvent.snapshot / DatasetSample.imageUrl 引用保护，先删文件后删库、孤立行清理、批量上限、磁盘压力只淘汰已过期项；`GET/PUT /snapshot-retention`、`POST /snapshot-cleanup`。
+  - TASK-009 录像生命周期：`pruneBefore`/`Cleanup` 跳过紧急标记、在录通道与未归档唯一副本（files=0 放宽）；新增 `Consistency()`（缺失/孤儿）与 `Capacity()`（本地/云归档/合计），Sync 尽力补 SizeBytes；`GET /recording-consistency`、`/recording-capacity`，cleanup 响应含 skipped 统计。
+  - TASK-010 磁盘健康：新增 `internal/storage`（Statfs 容量、目录占用、70/85/95 阈值告警、清理记录），`GET /storage/health|usage|alerts`；前端 Snapshots 保留策略卡、Recordings 容量/一致性、Dashboard 磁盘健康卡。
+- **验证**：`gofmt` 干净；`cd server && go test ./...`、`go vet ./...` 全绿；`cd web && npm run build` 通过；新增快照保留、录像生命周期、storage 模块测试全过。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：等待人工审查；第六批 TASK-013（备份恢复）/TASK-014（统一健康检查）需审查通过后另行确认。

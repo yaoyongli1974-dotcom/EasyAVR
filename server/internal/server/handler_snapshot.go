@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -117,6 +118,69 @@ func (a *App) deleteSnapshot(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{"id": id})
+}
+
+// snapshotRetentionResponse is the shared shape for GET and PUT of the
+// snapshot retention policy.
+func (a *App) snapshotRetentionResponse() gin.H {
+	cfg := a.snaps.Retention()
+	lastAt, lastDeleted, lastErr := a.snaps.RetentionStats()
+	var lastCleanupAt any
+	if !lastAt.IsZero() {
+		lastCleanupAt = lastAt
+	}
+	return gin.H{
+		"days":               cfg.Days,
+		"maxDiskUsageMB":     cfg.MaxDiskUsageMB,
+		"cleanupIntervalSec": int(cfg.CleanupInterval / time.Second),
+		"maxPerRun":          cfg.MaxPerRun,
+		"lastCleanupAt":      lastCleanupAt,
+		"lastDeleted":        lastDeleted,
+		"lastError":          lastErr,
+	}
+}
+
+// getSnapshotRetention reports the active retention policy and last run.
+func (a *App) getSnapshotRetention(c *gin.Context) {
+	ok(c, a.snapshotRetentionResponse())
+}
+
+type snapshotRetentionRequest struct {
+	Days               int `json:"days"`
+	MaxDiskUsageMB     int `json:"maxDiskUsageMB"`
+	CleanupIntervalSec int `json:"cleanupIntervalSec"`
+	MaxPerRun          int `json:"maxPerRun"`
+}
+
+// updateSnapshotRetention replaces the runtime retention policy. Negative
+// values are rejected; zero disables the corresponding limit/feature.
+func (a *App) updateSnapshotRetention(c *gin.Context) {
+	var req snapshotRetentionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Days < 0 || req.MaxDiskUsageMB < 0 || req.CleanupIntervalSec < 0 || req.MaxPerRun < 0 {
+		fail(c, http.StatusBadRequest, "参数非法：保留期配置不能为负数")
+		return
+	}
+	a.snaps.SetRetention(snapshot.RetentionConfig{
+		Days:            req.Days,
+		MaxDiskUsageMB:  req.MaxDiskUsageMB,
+		CleanupInterval: time.Duration(req.CleanupIntervalSec) * time.Second,
+		MaxPerRun:       req.MaxPerRun,
+	})
+	ok(c, a.snapshotRetentionResponse())
+}
+
+// cleanupSnapshots runs one retention pass immediately.
+func (a *App) cleanupSnapshots(c *gin.Context) {
+	deleted, freed, err := a.snaps.Cleanup()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, gin.H{"deleted": deleted, "bytes": freed})
 }
 
 // snapshotChannelAllowed mirrors requireGroupPerm for snapshot ownership:

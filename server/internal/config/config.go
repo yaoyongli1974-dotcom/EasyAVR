@@ -34,14 +34,22 @@ type Config struct {
 	AllowOrigin           string
 	SnapshotDir           string
 	MonitorSec            int
-	AI                    AIConfig
-	GB                    GBConfig
-	Cluster               ClusterConfig
-	GA1400                GA1400Config
-	EHOME                 EHOMEConfig
-	GB35114               GB35114Config
-	Map                   MapConfig
-	Playback              PlaybackConfig
+	// Snapshot retention and disk health thresholds (TASK-008/010).
+	SnapshotRetentionDays      int
+	SnapshotMaxDiskUsageMB     int
+	SnapshotCleanupIntervalSec int
+	SnapshotMaxCleanupPerRun   int
+	StorageInfoPercent         int
+	StorageWarnPercent         int
+	StorageCriticalPercent     int
+	AI                         AIConfig
+	GB                         GBConfig
+	Cluster                    ClusterConfig
+	GA1400                     GA1400Config
+	EHOME                      EHOMEConfig
+	GB35114                    GB35114Config
+	Map                        MapConfig
+	Playback                   PlaybackConfig
 }
 
 // PlaybackConfig governs signed playback URLs (手册 3.7.1.1 播放鉴权/播放时效/播放白名单).
@@ -131,22 +139,29 @@ type ZLMConfig struct {
 
 func Load() *Config {
 	return &Config{
-		Env:                   env("EASYAVR_ENV", "development"),
-		Listen:                env("EASYAVR_LISTEN", ":18000"),
-		DBDriver:              env("EASYAVR_DB_DRIVER", "sqlite"),
-		DBPath:                env("EASYAVR_DB", "./data/easyavr.db"),
-		DBDSN:                 env("EASYAVR_DB_DSN", ""),
-		JWTSecret:             env("EASYAVR_JWT_SECRET", "easyavr-dev-secret-change-me"),
-		JWTExpireH:            envInt("EASYAVR_JWT_EXPIRE_HOURS", 24),
-		AdminUser:             env("EASYAVR_ADMIN_USER", "easyavr"),
-		AdminPass:             env("EASYAVR_ADMIN_PASS", "easyavr"),
-		CredentialKey:         env("EASYAVR_CREDENTIAL_KEY", ""),
-		CredentialKeyID:       env("EASYAVR_CREDENTIAL_KEY_ID", "v1"),
-		CredentialKeyPrevious: parsePreviousKeys(env("EASYAVR_CREDENTIAL_KEY_PREVIOUS", "")),
-		PGVector:              envBool("EASYAVR_PGVECTOR", true),
-		AllowOrigin:           env("EASYAVR_ALLOW_ORIGIN", "*"),
-		SnapshotDir:           env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
-		MonitorSec:            envInt("EASYAVR_MONITOR_SEC", 0),
+		Env:                        env("EASYAVR_ENV", "development"),
+		Listen:                     env("EASYAVR_LISTEN", ":18000"),
+		DBDriver:                   env("EASYAVR_DB_DRIVER", "sqlite"),
+		DBPath:                     env("EASYAVR_DB", "./data/easyavr.db"),
+		DBDSN:                      env("EASYAVR_DB_DSN", ""),
+		JWTSecret:                  env("EASYAVR_JWT_SECRET", "easyavr-dev-secret-change-me"),
+		JWTExpireH:                 envInt("EASYAVR_JWT_EXPIRE_HOURS", 24),
+		AdminUser:                  env("EASYAVR_ADMIN_USER", "easyavr"),
+		AdminPass:                  env("EASYAVR_ADMIN_PASS", "easyavr"),
+		CredentialKey:              env("EASYAVR_CREDENTIAL_KEY", ""),
+		CredentialKeyID:            env("EASYAVR_CREDENTIAL_KEY_ID", "v1"),
+		CredentialKeyPrevious:      parsePreviousKeys(env("EASYAVR_CREDENTIAL_KEY_PREVIOUS", "")),
+		PGVector:                   envBool("EASYAVR_PGVECTOR", true),
+		AllowOrigin:                env("EASYAVR_ALLOW_ORIGIN", "*"),
+		SnapshotDir:                env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
+		MonitorSec:                 envInt("EASYAVR_MONITOR_SEC", 0),
+		SnapshotRetentionDays:      envInt("EASYAVR_SNAPSHOT_RETENTION_DAYS", 30),
+		SnapshotMaxDiskUsageMB:     envInt("EASYAVR_SNAPSHOT_MAX_DISK_USAGE", 0),
+		SnapshotCleanupIntervalSec: envInt("EASYAVR_SNAPSHOT_CLEANUP_INTERVAL", 3600),
+		SnapshotMaxCleanupPerRun:   envInt("EASYAVR_SNAPSHOT_MAX_CLEANUP_PER_RUN", 200),
+		StorageInfoPercent:         envInt("EASYAVR_STORAGE_INFO_PERCENT", 70),
+		StorageWarnPercent:         envInt("EASYAVR_STORAGE_WARN_PERCENT", 85),
+		StorageCriticalPercent:     envInt("EASYAVR_STORAGE_CRITICAL_PERCENT", 95),
 		AI: AIConfig{
 			MaxConcurrency:  envInt("EASYAVR_AI_MAX_CONCURRENCY", 4),
 			PerChannelLimit: envInt("EASYAVR_AI_PER_CHANNEL_LIMIT", 1),
@@ -230,6 +245,12 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	var problems []string
+	if c.SnapshotRetentionDays < 0 || c.SnapshotCleanupIntervalSec < 60 || c.SnapshotMaxCleanupPerRun < 1 {
+		problems = append(problems, "EASYAVR_SNAPSHOT_RETENTION_DAYS / CLEANUP_INTERVAL / MAX_CLEANUP_PER_RUN are invalid")
+	}
+	if !(0 < c.StorageInfoPercent && c.StorageInfoPercent < c.StorageWarnPercent && c.StorageWarnPercent < c.StorageCriticalPercent && c.StorageCriticalPercent <= 100) {
+		problems = append(problems, "EASYAVR_STORAGE_*_PERCENT thresholds must be increasing and within 1..100")
+	}
 	if c.JWTSecret == "easyavr-dev-secret-change-me" || len(c.JWTSecret) < 16 {
 		problems = append(problems, "EASYAVR_JWT_SECRET is a default or too short")
 	}

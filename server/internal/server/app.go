@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/easyavr/easyavr/internal/recording"
 	"github.com/easyavr/easyavr/internal/search"
 	"github.com/easyavr/easyavr/internal/snapshot"
+	"github.com/easyavr/easyavr/internal/storage"
 	"github.com/easyavr/easyavr/internal/transcode"
 	"github.com/easyavr/easyavr/internal/video"
 )
@@ -47,6 +49,7 @@ type App struct {
 	events  *event.Service
 	rec     *recording.Service
 	snaps   *snapshot.Service
+	storage *storage.Service
 	arch    *archive.Service
 	tr      *transcode.Service
 	gb      *gb28181.Server
@@ -95,9 +98,15 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 			MaxRetries:      cfg.AI.MaxRetries,
 			BackoffBase:     time.Duration(cfg.AI.BackoffBaseMs) * time.Millisecond,
 		}),
-		events:  event.NewService(db),
-		rec:     recording.NewService(db, zlm),
-		snaps:   snapshot.NewService(db, zlm, cfg.SnapshotDir),
+		events: event.NewService(db),
+		rec:    recording.NewService(db, zlm),
+		snaps:  snapshot.NewService(db, zlm, cfg.SnapshotDir),
+		storage: storage.New(db, storage.Config{
+			InfoPercent:     cfg.StorageInfoPercent,
+			WarnPercent:     cfg.StorageWarnPercent,
+			CriticalPercent: cfg.StorageCriticalPercent,
+			MaxWalkEntries:  5000,
+		}),
 		arch:    archive.NewService(db, zlm),
 		tr:      transcode.NewService(db, zlm),
 		notify:  notifySvc,
@@ -109,6 +118,17 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 		geo:     geo.New(cfg.Map.AMapKey),
 	}
 	a.runner.SetSink(sink)
+	a.snaps.SetRetention(snapshot.RetentionConfig{
+		Days:            cfg.SnapshotRetentionDays,
+		MaxDiskUsageMB:  cfg.SnapshotMaxDiskUsageMB,
+		CleanupInterval: time.Duration(cfg.SnapshotCleanupIntervalSec) * time.Second,
+		MaxPerRun:       cfg.SnapshotMaxCleanupPerRun,
+	})
+	a.storage.SetDirs(map[string]string{
+		"snapshots": cfg.SnapshotDir,
+		"data":      filepath.Dir(cfg.DBPath),
+		"certs":     cfg.GB35114.CertDir,
+	})
 	a.gb = gb28181.NewServer(cfg.GB, db, zlm)
 	a.gb.SetSink(sink)
 	a.ehome = ehome.NewServer(cfg.EHOME, db)
@@ -161,6 +181,18 @@ func (a *App) Run() error {
 	go a.runner.Recover()
 	a.rec.StartScheduler(ctx, time.Minute)
 	a.snaps.StartScheduler(ctx, 30*time.Second)
+	a.snaps.StartCleanupScheduler(ctx)
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			at, deleted, errText := a.snaps.RetentionStats()
+			if at.IsZero() {
+				continue
+			}
+			a.storage.NoteCleanup(at, fmt.Sprintf("deleted=%d err=%s", deleted, errText))
+		}
+	}()
 	a.notify.StartEscalation(ctx, time.Minute)
 	a.cluster.Start(ctx)
 	if a.cfg.MonitorSec > 0 {

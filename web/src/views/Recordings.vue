@@ -23,6 +23,45 @@
       </div>
     </div>
 
+    <div class="section-title">容量概览</div>
+    <div class="capacity-grid" v-loading="capacityLoading">
+      <div class="capacity-card">
+        <div class="cap-label">本地录像</div>
+        <div class="cap-value">{{ formatSize(capacity.localBytes) }}</div>
+      </div>
+      <div class="capacity-card">
+        <div class="cap-label">云归档</div>
+        <div class="cap-value">{{ formatSize(capacity.archivedBytes) }}</div>
+      </div>
+      <div class="capacity-card total">
+        <div class="cap-label">合计占用</div>
+        <div class="cap-value">{{ formatSize(capacity.totalBytes) }}</div>
+      </div>
+    </div>
+
+    <el-card class="consistency-card">
+      <template #header>
+        <div class="card-header">
+          <span>一致性检查</span>
+          <el-button size="small" :loading="checking" @click="checkConsistency">检查</el-button>
+        </div>
+      </template>
+      <div v-if="consistency" class="consistency-result">
+        <div class="result-item">
+          <span class="result-label">缺失库行</span>
+          <span class="result-num">{{ consistency.missing.length }}</span>
+          <span class="result-unit">条</span>
+        </div>
+        <div class="result-item">
+          <span class="result-label">孤立文件</span>
+          <span class="result-num">{{ consistency.orphan.length }}</span>
+          <span class="result-unit">个</span>
+        </div>
+        <div class="result-note">仅展示检查结果，不会删除任何数据。</div>
+      </div>
+      <el-empty v-else description="尚未检查，点击「检查」查看录像目录与文件的差异" :image-size="60" />
+    </el-card>
+
     <el-card v-if="view === 'list'">
       <el-table :data="recordings" border v-loading="loading">
         <el-table-column prop="id" label="ID" width="70" />
@@ -129,7 +168,14 @@
 import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { channelApi, recordingApi, storageApi } from '../api'
-import type { Channel, CloudStore, Recording, RecordingArchive } from '../types'
+import type {
+  Channel,
+  CloudStore,
+  Recording,
+  RecordingArchive,
+  RecordingCapacity,
+  RecordingConsistency,
+} from '../types'
 
 const channels = ref<Channel[]>([])
 const channelId = ref<number>()
@@ -143,6 +189,33 @@ const view = ref<'list' | 'timeline'>('list')
 const speed = ref(1)
 const speeds = [0.5, 1, 2, 4, 8, 16]
 const axisHours = Array.from({ length: 25 }, (_, i) => i)
+
+const capacity = ref<RecordingCapacity>({ totalBytes: 0, localBytes: 0, archivedBytes: 0 })
+const capacityLoading = ref(false)
+const consistency = ref<RecordingConsistency | null>(null)
+const checking = ref(false)
+
+async function loadCapacity() {
+  capacityLoading.value = true
+  try {
+    capacity.value = await recordingApi.capacity()
+  } catch {
+    // 容量接口不可用时保留 0 值，页面其余功能不受影响
+  } finally {
+    capacityLoading.value = false
+  }
+}
+
+async function checkConsistency() {
+  checking.value = true
+  try {
+    consistency.value = await recordingApi.consistency()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '一致性检查失败')
+  } finally {
+    checking.value = false
+  }
+}
 
 async function loadChannels() {
   channels.value = await channelApi.list()
@@ -164,6 +237,7 @@ async function sync() {
     const res = await recordingApi.sync(channelId.value, date.value)
     ElMessage.success(`已同步 ${res.count} 条录像`)
     load()
+    loadCapacity()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || '同步失败，请确认 ZLMediaKit 与录像已开启')
   }
@@ -203,6 +277,7 @@ async function cleanup() {
   const r = await recordingApi.cleanup(0)
   ElMessage.success(`已清理 ${r.removed} 条`)
   load()
+  loadCapacity()
 }
 
 function download(row: Recording) {
@@ -259,6 +334,7 @@ async function doArchive() {
     const res = await recordingApi.archive(archiveRow.value.id, archiveStoreId.value)
     archiveResult.value = res
     ElMessage.success('已上传')
+    loadCapacity()
     recordingApi.archives(archiveRow.value.id).then((a) => (archives.value = a)).catch(() => {})
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.message || '归档失败，请确认对象存储可访问')
@@ -273,6 +349,7 @@ onMounted(async () => {
     channelId.value = channels.value[0].id
     load()
   }
+  loadCapacity()
 })
 </script>
 
@@ -331,5 +408,77 @@ onMounted(async () => {
   color: #334155;
   margin-bottom: 4px;
   word-break: break-all;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 10px;
+}
+.capacity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.capacity-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+.capacity-card.total {
+  border-color: #bfdbfe;
+  background: #f0f7ff;
+}
+.cap-label {
+  font-size: 12px;
+  color: #64748b;
+}
+.cap-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #334155;
+  margin-top: 4px;
+}
+.capacity-card.total .cap-value {
+  color: #2563eb;
+}
+.consistency-card {
+  margin-bottom: 16px;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.consistency-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 28px;
+}
+.result-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.result-label {
+  font-size: 13px;
+  color: #64748b;
+}
+.result-num {
+  font-size: 22px;
+  font-weight: 600;
+  color: #d97706;
+}
+.result-unit {
+  font-size: 12px;
+  color: #94a3b8;
+}
+.result-note {
+  font-size: 12px;
+  color: #94a3b8;
 }
 </style>

@@ -87,6 +87,13 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 | `EASYAVR_MEDIA_SCHEME` | `http` | 播放地址协议；页面走 HTTPS 时设为 `https`，并让 nginx 把 `/live`、`/record`、`/index/api/webrtc` 反代到 ZLM |
 | `EASYAVR_WEB_DIST` | `../web/dist` | 静态前端目录 |
 | `EASYAVR_SNAPSHOT_DIR` | `./data/snapshots` | 快照存储目录 |
+| `EASYAVR_SNAPSHOT_RETENTION_DAYS` | `30` | 快照保留天数，0 禁用自动清理；被事件/样本引用的快照永不删除 |
+| `EASYAVR_SNAPSHOT_MAX_DISK_USAGE_MB` | `0` | 快照磁盘上限（MB），0 不限；压力时只淘汰已过期快照 |
+| `EASYAVR_SNAPSHOT_CLEANUP_INTERVAL_SEC` | `3600` | 自动清理周期（秒） |
+| `EASYAVR_SNAPSHOT_MAX_CLEANUP_PER_RUN` | `200` | 单次清理最大条数 |
+| `EASYAVR_STORAGE_INFO_PERCENT` | `70` | 磁盘使用率提醒阈值 |
+| `EASYAVR_STORAGE_WARN_PERCENT` | `85` | 磁盘使用率警告阈值 |
+| `EASYAVR_STORAGE_CRITICAL_PERCENT` | `95` | 磁盘使用率严重阈值 |
 | `EASYAVR_MONITOR_SEC` | `0` | 后台流量/状态采样周期（秒），0 关闭 |
 | `EASYAVR_PLAY_AUTH` | `false` | 开启播放地址签名鉴权 |
 | `EASYAVR_PLAY_TOKEN_TTL_MIN` | `60` | 播放 token 有效期（分钟） |
@@ -148,7 +155,8 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 - **批量导入导出**：设备/通道/用户支持 CSV 导入导出（Excel 友好）。
 - **播放鉴权**：可开启播放地址签名（HMAC + 时效），支持来源白名单，并提供 ZLM `on_play` 钩子校验。
 - **流量与状态**：通道累计流量统计、设备 TCP 健康检测、设备/通道上线/离线状态记录。
-- **录像增强**：列表/时间轴视图、0.5–16 倍速回放、紧急标记、按计划保存天数清理过期目录项；保留期清理会真实删除 ZLM 媒体文件（`/recordings/cleanup?files=1`），`files=0` 只清目录。
+- **录像增强**：列表/时间轴视图、0.5–16 倍速回放、紧急标记、按计划保存天数清理过期目录项；保留期清理会真实删除 ZLM 媒体文件（`/recordings/cleanup?files=1`），`files=0` 只清目录；跳过紧急标记、正在录像的通道与未归档唯一副本，提供一致性检查与容量统计。
+- **存储生命周期与磁盘健康**：快照自动保留期清理（引用保护、先删文件后删库、批量上限、手动触发/统计）；`/storage/health|usage|alerts` 按 70/85/95 阈值报告容量与目录占用，运维页展示。
 - **转码 / OSD 水印**：平台侧 ffmpeg 从本机 RTSP 回环拉源流转码（H.264 + 码率/分辨率）并叠加中英文水印（OSD），输出派生流 `live/<streamKey>_t` 回推 ZLM，播放/录像/检索均可用派生流。见「转码与水印」页；任务崩溃自动置 failed 并停用。
 - **AI 分析计划**：任务支持 ROI 区域、分析灵敏度与分析计划（每天/工作日/双休日 + 时段）。配置 JSON 中 `autoRecover:true` 的任务会在服务重启后自动恢复；每次执行生成独立运行记录（状态/心跳/重试/错误分类），可从任务页「运行历史」抽屉查看并手动恢复。
 - **全局功能搜索**：顶栏「功能搜索 (Ctrl+K)」按名称/关键词快速跳转功能模块。

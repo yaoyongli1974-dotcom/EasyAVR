@@ -421,6 +421,17 @@ export interface RecordingPlan {
   streamType: string
 }
 
+export interface RecordingConsistency {
+  missing: number[]
+  orphan: string[]
+}
+
+export interface RecordingCapacity {
+  totalBytes: number
+  localBytes: number
+  archivedBytes: number
+}
+
 export interface Snapshot {
   id: number
   channelId: number
@@ -428,6 +439,23 @@ export interface Snapshot {
   url: string
   sizeBytes: number
   takenAt: string
+}
+
+export interface SnapshotRetention {
+  days: number
+  maxDiskUsageMB: number
+  cleanupIntervalSec: number
+  maxPerRun: number
+  lastCleanupAt?: string | null
+  lastDeleted?: number
+  lastError?: string | null
+}
+
+export type SnapshotRetentionUpdate = Partial<Pick<SnapshotRetention, 'days' | 'maxDiskUsageMB' | 'cleanupIntervalSec' | 'maxPerRun'>>
+
+export interface SnapshotCleanupResult {
+  deleted: number
+  bytes: number
 }
 
 export interface GBDevice {
@@ -833,4 +861,41 @@ export interface ArchivePage {
   total: number
   page: number
   pageSize: number
+}
+
+export interface StorageDir {
+  name: string
+  path: string
+  bytes: number
+  files: number
+}
+
+export interface StorageAlert {
+  level: string
+  dir: string
+  usedPercent: number
+  message: string
+}
+
+export interface StorageUsage {
+  dirs: StorageDir[]
+  totalBytes?: number
+  usedBytes?: number
+  freeBytes?: number
+  usedPercent?: number
+  checkedAt?: string | null
+}
+
+export interface StorageAlerts {
+  alerts: StorageAlert[]
+}
+
+export interface StorageHealth extends StorageUsage {
+  totalBytes: number
+  usedBytes: number
+  freeBytes: number
+  usedPercent: number
+  alerts: StorageAlert[]
+  lastCleanupAt?: string | null
+  lastCleanupResult?: unknown
 }

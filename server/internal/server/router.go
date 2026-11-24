@@ -170,6 +170,8 @@ func (a *App) buildRouter() *gin.Engine {
 	rec.DELETE("/:id", a.deleteRecording)
 	rec.POST("/:id/archive", a.archiveRecording)
 	rec.GET("/:id/archives", a.listRecordingArchives)
+	authed.GET("/recording-consistency", a.consistencyReport, a.requireGroupPerm("video"))
+	authed.GET("/recording-capacity", a.recordingCapacity, a.requireGroupPerm("video"))
 	authed.GET("/archives", a.listArchives).Use(a.requireGroupPerm("video"))
 
 	// 录像云归档: S3 兼容对象存储（MinIO/OSS/COS）。
@@ -195,6 +197,9 @@ func (a *App) buildRouter() *gin.Engine {
 	authed.GET("/snapshots", a.listSnapshots, a.requireGroupPerm("video"))
 	authed.DELETE("/snapshots/:id", a.deleteSnapshot, a.requireGroupPerm("video"))
 	authed.GET("/snapshots/:id/access-url", a.snapshotAccessURL, a.requireGroupPerm("video"))
+	authed.GET("/snapshot-retention", a.getSnapshotRetention, a.requireGroupPerm("video"))
+	authed.PUT("/snapshot-retention", a.updateSnapshotRetention, a.requireGroupPerm("video"))
+	authed.POST("/snapshot-cleanup", a.cleanupSnapshots, a.requireGroupPerm("video"))
 
 	// GB28181 routes with policy
 	gbGroup := authed.Group("/gb")
@@ -410,6 +415,9 @@ func (a *App) buildRouter() *gin.Engine {
 	auditGroup.GET("/logs/export", a.exportAuditLogs)
 
 	authed.GET("/system/info", a.systemInfo)
+	authed.GET("/storage/health", a.storageHealth)
+	authed.GET("/storage/usage", a.storageUsage)
+	authed.GET("/storage/alerts", a.storageAlerts)
 
 	// Snapshot images are no longer served as a public static directory (TASK-005).
 	// Access goes through the short-lived signed /api/v1/snapshot-access/:token route.

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -24,19 +25,81 @@ import (
 	"github.com/easyavr/easyavr/internal/video"
 )
 
+// RetentionConfig governs automatic snapshot cleanup. Days <= 0 disables
+// age-based expiry; MaxDiskUsageMB <= 0 disables the disk usage cap; a
+// non-positive CleanupInterval disables the scheduler.
+type RetentionConfig struct {
+	Days            int
+	MaxDiskUsageMB  int
+	CleanupInterval time.Duration
+	MaxPerRun       int
+}
+
+const (
+	defaultRetentionDays    = 30
+	defaultCleanupInterval  = time.Hour
+	defaultMaxCleanupPerRun = 200
+)
+
 // Service captures and catalogs snapshots.
 type Service struct {
 	db  *gorm.DB
 	zlm *video.Client
 	dir string
+
+	// retentionMu guards the runtime retention config and the last-run stats.
+	retentionMu   sync.RWMutex
+	retention     RetentionConfig
+	lastCleanupAt time.Time
+	lastDeleted   int
+	lastErr       string
+
+	// cleanupMu makes Cleanup runs mutually exclusive (scheduler ticks and
+	// manual API calls must never delete the same row twice).
+	cleanupMu sync.Mutex
 }
 
 func NewService(db *gorm.DB, zlm *video.Client, dir string) *Service {
-	return &Service{db: db, zlm: zlm, dir: dir}
+	return &Service{
+		db:  db,
+		zlm: zlm,
+		dir: dir,
+		retention: RetentionConfig{
+			Days:            defaultRetentionDays,
+			CleanupInterval: defaultCleanupInterval,
+			MaxPerRun:       defaultMaxCleanupPerRun,
+		},
+	}
 }
 
 // Dir returns the root directory where snapshots are stored.
 func (s *Service) Dir() string { return s.dir }
+
+// SetRetention replaces the runtime retention config. A non-positive
+// MaxPerRun is normalized to the default batch size so that the value exposed
+// to the API matches the value actually enforced by Cleanup.
+func (s *Service) SetRetention(cfg RetentionConfig) {
+	if cfg.MaxPerRun <= 0 {
+		cfg.MaxPerRun = defaultMaxCleanupPerRun
+	}
+	s.retentionMu.Lock()
+	defer s.retentionMu.Unlock()
+	s.retention = cfg
+}
+
+// Retention returns the current runtime retention config.
+func (s *Service) Retention() RetentionConfig {
+	s.retentionMu.RLock()
+	defer s.retentionMu.RUnlock()
+	return s.retention
+}
+
+// RetentionStats reports the outcome of the most recent cleanup run.
+func (s *Service) RetentionStats() (lastCleanupAt time.Time, lastDeleted int, lastErr string) {
+	s.retentionMu.RLock()
+	defer s.retentionMu.RUnlock()
+	return s.lastCleanupAt, s.lastDeleted, s.lastErr
+}
 
 // Capture grabs a frame from the channel and stores it as a snapshot.
 func (s *Service) Capture(ctx context.Context, channelID uint) (*model.Snapshot, error) {
@@ -116,6 +179,126 @@ func (s *Service) Delete(id uint) error {
 		_ = os.Remove(filepath.Join(s.dir, snap.Path))
 	}
 	return s.db.Delete(&model.Snapshot{}, id).Error
+}
+
+// Cleanup prunes expired snapshots. A snapshot is expired when its TakenAt is
+// older than the configured retention window; when a disk usage cap is set the
+// oldest expired snapshots are evicted until the cap is met. Snapshots that
+// are still within the window are NEVER deleted, even under disk pressure.
+// Snapshots still referenced by an AI event or a dataset sample are skipped.
+// Files are removed before catalog rows; a missing file is treated as success
+// so orphan rows can be cleared, while other failures are logged and skipped.
+func (s *Service) Cleanup() (deleted int, bytes int64, err error) {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	s.retentionMu.RLock()
+	cfg := s.retention
+	s.retentionMu.RUnlock()
+
+	now := time.Now()
+	defer func() {
+		s.retentionMu.Lock()
+		s.lastCleanupAt = now
+		s.lastDeleted = deleted
+		s.lastErr = ""
+		if err != nil {
+			s.lastErr = err.Error()
+		}
+		s.retentionMu.Unlock()
+	}()
+
+	// Snapshot URLs still in use by the AI event center or by dataset samples.
+	// Exact matches only: a longer/shorter URL must not protect a snapshot.
+	referenced := make(map[string]bool)
+	var eventURLs []string
+	if err := s.db.Model(&model.AIEvent{}).Where("snapshot <> ?", "").Pluck("snapshot", &eventURLs).Error; err != nil {
+		return 0, 0, err
+	}
+	for _, u := range eventURLs {
+		referenced[u] = true
+	}
+	var sampleURLs []string
+	if err := s.db.Model(&model.DatasetSample{}).Where("image_url <> ?", "").Pluck("image_url", &sampleURLs).Error; err != nil {
+		return 0, 0, err
+	}
+	for _, u := range sampleURLs {
+		referenced[u] = true
+	}
+
+	// Only age-expired snapshots are eligible, oldest first. Days <= 0 means
+	// retention is disabled and nothing is eligible.
+	var eligible []model.Snapshot
+	if cfg.Days > 0 {
+		cutoff := now.AddDate(0, 0, -cfg.Days)
+		if err := s.db.Where("taken_at < ?", cutoff).Order("taken_at ASC").Find(&eligible).Error; err != nil {
+			return 0, 0, err
+		}
+	}
+
+	if cfg.MaxDiskUsageMB > 0 {
+		var usage int64
+		s.db.Model(&model.Snapshot{}).Select("COALESCE(SUM(size_bytes),0)").Scan(&usage)
+		limit := int64(cfg.MaxDiskUsageMB) * 1024 * 1024
+		if usage > limit {
+			log.Printf("[snapshot] retention: usage %d bytes exceeds cap %d MB, evicting oldest expired snapshots", usage, cfg.MaxDiskUsageMB)
+		}
+	}
+
+	maxPerRun := cfg.MaxPerRun
+	if maxPerRun <= 0 {
+		maxPerRun = defaultMaxCleanupPerRun
+	}
+	for _, snap := range eligible {
+		if deleted >= maxPerRun {
+			break
+		}
+		if referenced[snap.URL] {
+			continue
+		}
+		abs, err := s.ResolvePath(snap.Path)
+		if err != nil {
+			log.Printf("[snapshot] retention: skip snapshot %d: %v", snap.ID, err)
+			continue
+		}
+		if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+			log.Printf("[snapshot] retention: remove file for snapshot %d: %v", snap.ID, err)
+			continue
+		}
+		if err := s.db.Delete(&model.Snapshot{}, snap.ID).Error; err != nil {
+			log.Printf("[snapshot] retention: delete row %d: %v", snap.ID, err)
+			continue
+		}
+		deleted++
+		bytes += snap.SizeBytes
+	}
+	return deleted, bytes, nil
+}
+
+// StartCleanupScheduler runs Cleanup on the configured interval until ctx is
+// cancelled. A non-positive interval disables the scheduler. Overlapping runs
+// are prevented by cleanupMu (which also guards manual API-triggered runs).
+func (s *Service) StartCleanupScheduler(ctx context.Context) {
+	go func() {
+		s.retentionMu.RLock()
+		interval := s.retention.CleanupInterval
+		s.retentionMu.RUnlock()
+		if interval <= 0 {
+			return
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if _, _, err := s.Cleanup(); err != nil {
+					log.Printf("[snapshot] scheduled cleanup: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 // StartScheduler periodically captures snapshots for channels with
