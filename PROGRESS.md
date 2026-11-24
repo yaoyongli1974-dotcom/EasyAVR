@@ -740,3 +740,8 @@
 - **已完成**：经用户确认，`feature/easyavr-tech-002-security-reliability` 以 fast-forward 合并入 `main`（`287a007..7e6629f`，36 个文件、+5367/-235），并 `git push origin main` 成功；`origin/main` 已指向 `7e6629f`。feature 分支保留在 GitHub 上。
 - **当前状态**：完成（已推送 main）
 - **下一步**：人工审查 GitHub 上的提交；真实 PG 恢复/密钥轮换演练、真机烟雾测试、UI 点击验证。
+
+### 2026-11-25（EASYAVR-TECH-003 TASK-000/011/012/013 合并至 main 并推送）
+- **已完成**：`feature/easyavr-tech-003-reliability` 已推送到 GitHub；`main` 以 fast-forward 合并 `d367931..096091d`（14 个文件、+1528/-68，含 TASK-011 Runner 并发可靠性、TASK-012 快照安全打开、TASK-013 PostgreSQL 真实备份恢复演练与报告），并已 `git push origin main`。`origin/main` 指向 `096091d`，feature 分支保留在远端。
+- **当前状态**：完成（已推送 main）
+- **下一步**：人工审查 GitHub 提交；继续 TASK-014（GB28181 真实设备互通）与 TASK-015（视频稳定性/压力测试）需另行确认。
