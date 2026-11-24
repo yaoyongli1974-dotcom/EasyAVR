@@ -133,6 +133,14 @@ func (s *semaphore) release() {
 	s.grantLocked()
 }
 
+// waiting reports how many callers are parked on this semaphore. Used by the
+// read-only health snapshot; it never mutates or grants slots.
+func (s *semaphore) waiting() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.waiters)
+}
+
 // stopRequested reports whether this execution was canceled by Stop/Close or
 // hit its own deadline. Both are clean stops, not provider failures.
 func stopRequested(ctx context.Context, err error) bool {

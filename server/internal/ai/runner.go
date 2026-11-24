@@ -125,6 +125,14 @@ type Runner struct {
 	idle       chan struct{} // closed whenever inflight reaches zero
 	recoverMu  sync.Mutex    // serializes recover scans/work per runner
 
+	// Recovery outcome for health probes. Separate mutex so HealthStats can
+	// snapshot it without waiting for a running recovery scan.
+	recoverStatusMu  sync.RWMutex
+	recoverAttempted bool
+	lastRecoverAt    *time.Time
+	lastRecoverOK    bool
+	lastRecoverErr   string
+
 	optMu            sync.RWMutex
 	opts             RunnerOptions
 	taskHasErrorCols bool
@@ -519,12 +527,16 @@ func (r *Runner) Shutdown() { r.Close() }
 // closed out. Recovery never uses enabled as a signal: enabled means the task
 // is configured, not that it was started.
 func (r *Runner) Recover() error {
+	var recoverErr error
+	defer func() { r.setRecoverStatus(recoverErr) }()
 	if !r.track(1) {
-		return ErrRunnerClosed
+		recoverErr = ErrRunnerClosed
+		return recoverErr
 	}
 	defer r.finishTrack()
 	if r.baseCtx.Err() != nil {
-		return ErrRunnerClosed
+		recoverErr = ErrRunnerClosed
+		return recoverErr
 	}
 
 	r.recoverMu.Lock()
@@ -532,15 +544,20 @@ func (r *Runner) Recover() error {
 	var tasks []model.AITask
 	if err := r.db.Where("status = ?", "running").Find(&tasks).Error; err != nil {
 		log.Printf("[ai] recover scan failed: %v", err)
+		recoverErr = err
 		return err
 	}
 	for i := range tasks {
 		if r.IsClosed() || r.baseCtx.Err() != nil {
 			log.Printf("[ai] recover aborted during shutdown")
-			return ErrRunnerClosed
+			recoverErr = ErrRunnerClosed
+			return recoverErr
 		}
 		if err := r.recoverTaskLocked(tasks[i].ID); err != nil && !errors.Is(err, ErrRunnerClosed) {
 			log.Printf("[ai] task_id=%d recover failed: %v", tasks[i].ID, err)
+			if recoverErr == nil {
+				recoverErr = err
+			}
 		}
 	}
 	return nil

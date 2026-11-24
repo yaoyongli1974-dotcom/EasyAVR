@@ -721,3 +721,12 @@
 - **验证**：`gofmt -l` 干净；`cd server && go test ./...` 全绿、`go vet ./...` 零输出、`go test -race ./internal/ai ./internal/snapshot ./internal/server ./internal/security -count=1` 全绿；`cd web && npm run build` 通过。
 - **当前状态**：完成（已提交，未推送）
 - **下一步**：第六批 TASK-009 健康加强 + TASK-010 回归测试，并生成 `docs/EASYAVR-TECH-002-REPORT.md`。
+
+### 2026-11-24（EASYAVR-TECH-002 第六批：TASK-009 / TASK-010，本轮收官）
+- **已完成**：
+  - TASK-009 健康接口反映真实 AI 调度状态：新增 `ai/runner_health.go` 的 `HealthStats`（活跃/等待任务、运行记录心跳、连续失败、长期运行、恢复结果与关闭状态，错误脱敏为类别）；`/api/v1/readyz` 与 `/api/v1/health/details` 的 `checks.ai` 在保持原字段基础上新增统计；AI 异常只告警不影响就绪，DB 不可用仍 503。
+  - TASK-010 第二轮回归：新增 `tech002_regression_test.go`（13 组覆盖 15 类场景）、`tech002_backup_test.go`（SQLite 真实备份恢复往返 + PG 静态只读检查）、`deploy/scripts/verify-tech002.sh`（PASS=41 FAIL=0 SKIP=1）；修复 `storage_test.go` 在 `-race` 全量下因实时磁盘容量漂移导致的脆弱断言（改为容差比较，不跳过测试）。
+  - 生成最终交付报告 `docs/EASYAVR-TECH-002-REPORT.md`。
+- **验证通过**：`gofmt -l` 干净；`cd server && go test ./...`、`go vet ./...`、`go test -race ./...` 全绿；`cd web && npm run build` 通过；`bash -n deploy/scripts/*.sh` 与 `bash deploy/scripts/verify-tech002.sh` 通过。
+- **当前状态**：完成（已提交，未推送；等待人工审查）
+- **下一步**：隔离环境真实 PG 恢复 + 密钥轮换演练；真机 RTSP/GB28181 烟雾测试；浏览器点击验证密钥管理与磁盘健康 UI。

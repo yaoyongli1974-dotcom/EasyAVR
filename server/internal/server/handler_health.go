@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/easyavr/easyavr/internal/ai"
 	"github.com/easyavr/easyavr/internal/storage"
 )
 
@@ -28,6 +29,55 @@ type healthReport struct {
 	Checks  gin.H         `json:"checks"`
 	Alerts  []healthAlert `json:"alerts"`
 	Storage any           `json:"storage,omitempty"`
+}
+
+// healthAlertWarning is advisory: AI/storage alerts never fail readiness.
+const healthAlertWarning = "warning"
+
+// formatHealthTime renders an optional timestamp for the detailed probe. A
+// nil pointer yields an empty string rather than a zero time or config value.
+func formatHealthTime(ts *time.Time) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.Format(time.RFC3339)
+}
+
+// aiHealthCheck maps a sanitized ai.HealthStats into the checks.ai object. The
+// public probe carries only aggregate state; timestamps, counters and recovery
+// detail are added to the authenticated detailed view. HealthStats never
+// exposes prompts, provider keys, DSNs or configuration values.
+func aiHealthCheck(stats ai.HealthStats, detailed bool) gin.H {
+	status := stats.Status
+	if status == "" {
+		status = ai.HealthUnavailable
+	}
+	check := gin.H{
+		"status":    status,
+		"available": stats.Available,
+		"closed":    stats.Closed,
+		"healthy":   stats.Healthy(),
+	}
+	if detailed {
+		check["runningTasks"] = stats.RunningTasks
+		check["waitingTasks"] = stats.WaitingTasks
+		check["activeRuns"] = stats.ActiveRuns
+		check["queuedRuns"] = stats.QueuedRuns
+		check["consecutiveFailures"] = stats.ConsecutiveFailures
+		check["longRunningRuns"] = stats.LongRunningRuns
+		check["staleHeartbeats"] = stats.StaleHeartbeats
+		check["lastRunAt"] = formatHealthTime(stats.LastRunAt)
+		check["lastHeartbeatAt"] = formatHealthTime(stats.LastHeartbeatAt)
+		check["lastRecoverAt"] = formatHealthTime(stats.LastRecoverAt)
+		check["recoverAttempted"] = stats.RecoverAttempted
+		check["lastRecoverOK"] = stats.LastRecoverOK
+		check["lastRecoverError"] = stats.LastRecoverError
+		check["dbAvailable"] = stats.DBAvailable
+		check["runCreateFailures"] = stats.RunCreateFailures
+		check["runUpdateFailures"] = stats.RunUpdateFailures
+		check["taskStatusFailures"] = stats.TaskStatusFailures
+	}
+	return check
 }
 
 func elapsedMS(start time.Time) int64 {
@@ -114,13 +164,17 @@ func (a *App) collectHealth(detailed bool) (healthReport, bool) {
 	}
 	report.Checks["zlm"] = checkTiming(zlmCheck, detailed, start)
 
-	// AI runner presence.
+	// AI worker/scheduler health is advisory: scheduling anomalies are surfaced
+	// as alerts but never fail readiness (only the database can do that).
 	start = time.Now()
-	aiCheck := gin.H{
-		"status":    checkStatus(a.runner != nil, "available", "unavailable"),
-		"available": a.runner != nil,
+	aiStats := ai.HealthStats{Status: ai.HealthUnavailable, Closed: true}
+	if a.runner != nil {
+		aiStats = a.runner.HealthStats()
+		for _, message := range aiStats.Alerts {
+			report.Alerts = append(report.Alerts, healthAlert{Level: healthAlertWarning, Message: message})
+		}
 	}
-	report.Checks["ai"] = checkTiming(aiCheck, detailed, start)
+	report.Checks["ai"] = checkTiming(aiHealthCheck(aiStats, detailed), detailed, start)
 
 	// GB28181 / GB35114: only whether the plane is configured and running.
 	start = time.Now()
