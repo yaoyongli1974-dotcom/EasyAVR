@@ -405,6 +405,8 @@ PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
 
 `pg_restore.sh` 也接受 `-d <DSN>` 覆盖环境变量；并行度用 `PG_RESTORE_JOBS` 调整（默认 4）。`--clean --if-exists` 会 DROP 目标库中已有对象，执行前务必确认已备份。恢复完成后用 `/api/v1/readyz`（含 DB `SELECT 1`）和只读查询验证。
 
+> 版本偏差：PostgreSQL 17 的 `pg_dump` 会在归档里写入服务端未知参数 `SET transaction_timeout = 0`；恢复到 PG 16 及更旧服务端时 `pg_restore` 会把它列为 ignored error 并非零退出，但**数据已完整恢复**。`pg_restore.sh` 只对这一条已知告警放行并打印 WARNING，其他错误仍判定失败。长期方案是让备份客户端版本与生产服务端一致。
+
 ### 凭据加密密钥必须独立备份
 
 `EASYAVR_CREDENTIAL_KEY` 是数据库里设备密码 / API Key / 对象存储密钥等密文的主密钥（`enc:<kid>:...`）。**它绝不能和 DB 备份放在同一个目录或同一份归档里**：库备份泄露 + 同处密钥 = 全部凭据明文泄露；库备份泄露而密钥在别处 = 密文不可解。用 `openssl rand -base64 32` 生成后写入 0600、root 专属文件，存放到与 `/var/backups/easyavr`（含 PG 子目录）物理分离的位置（如密码管理器 / 异地密钥库），轮换方法见 `deploy/env.example` 顶部注释。

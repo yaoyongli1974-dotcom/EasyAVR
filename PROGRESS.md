@@ -671,3 +671,12 @@
 - **验证通过**：`bash -n deploy/scripts/*.sh`；SQLite 备份→恢复往返（dry-run 不改库、`--yes` 恢复行数/mode 正确、损坏 gzip 拒绝恢复、损坏备份不发布）；PG stub 演练参数拼装/轮转/DSN 脱敏；`go test ./...`、`go vet ./...`、`npm run build` 全绿。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：生产环境需人工配置凭据加密密钥独立备份、真实 PG 恢复演练、停服演练；真机摄像机复跑视频冒烟。
+
+### 2026-11-24（PG 备份恢复实战演练 + 密钥轮换）
+- **已完成**：在容器内一次性 PG 库（不碰业务库 easyavr）真实跑通 TASK-013 脚本与凭据密钥轮换：
+  - 用 PG 驱动启动平台 → 建带密码设备（库中密文 `enc:v1:...`）→ `pg_backup.sh`（非空 + `pg_restore -l` 目录校验）→ `pg_restore.sh` dry-run（无写入）→ `--yes` 恢复到第二个一次性库，设备行与密文一致。
+  - 发现并修复真实缺陷：本机 `pg_dump` 17 与容器 PG 16 版本偏差，归档带 `SET transaction_timeout = 0`，旧服务端报 ignored error 导致 `pg_restore` 非零退出（数据其实已完整恢复）。`pg_restore.sh` 现在只对这一条已知告警放行并打印 WARNING，其他错误仍失败；`deploy/README.md` 已说明长期方案（客户端版本对齐）。
+  - 密钥轮换：用新密钥 `EASYAVR_CREDENTIAL_KEY=v2` + `EASYAVR_CREDENTIAL_KEY_PREVIOUS=v1:<旧>` 启动到恢复库，迁移自动把密文换成 `enc:v2:...`；用 GORM hook 读取确认设备密码明文无损（`PLAINTEXT_PRESERVED`）。
+- **验证**：`bash -n deploy/scripts/*.sh` 通过；备份/恢复/轮换均实际执行；演练库与临时进程已全部清理；上一批的 `go test ./...`、`go vet ./...`、`npm run build` 结果仍有效（本批未改 Go/前端）。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：真实摄像头接入复跑 `scripts/smoke-video-e2e.sh`；生产环境独立备份主密钥；浏览器点击联调新增 UI。

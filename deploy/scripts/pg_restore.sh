@@ -92,7 +92,18 @@ if [[ -z $DSN ]]; then
 fi
 
 log "restoring $BACKUP with pg_restore -j$JOBS --clean --if-exists (DSN redacted)"
-if ! pg_restore -j"$JOBS" --clean --if-exists -d "$DSN" "$BACKUP"; then
-  die "pg_restore failed (DSN redacted); check target database state manually"
+RESTORE_LOG=$(mktemp)
+trap 'rm -f -- "$LIST" "$RESTORE_LOG"' EXIT
+if ! pg_restore -j"$JOBS" --clean --if-exists -d "$DSN" "$BACKUP" >"$RESTORE_LOG" 2>&1; then
+  cat -- "$RESTORE_LOG" >&2
+  # pg_dump/pg_restore 17 emits `SET transaction_timeout = 0`, which older
+  # servers do not know. It is a no-op header command; pg_restore still restores
+  # all data and exits non-zero only because of these ignored statements.
+  if grep -q 'unrecognized configuration parameter "transaction_timeout"' "$RESTORE_LOG" \
+     && ! grep -v 'unrecognized configuration parameter "transaction_timeout"' "$RESTORE_LOG" | grep -q 'ERROR:'; then
+    log "WARNING: benign pg_dump/pg_restore version skew (transaction_timeout); restore data completed"
+  else
+    die "pg_restore failed (DSN redacted); check target database state manually"
+  fi
 fi
 log "done: restore command succeeded; verify with /api/v1/readyz and a read-only query"
