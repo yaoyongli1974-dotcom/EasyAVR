@@ -730,3 +730,8 @@
 - **验证通过**：`gofmt -l` 干净；`cd server && go test ./...`、`go vet ./...`、`go test -race ./...` 全绿；`cd web && npm run build` 通过；`bash -n deploy/scripts/*.sh` 与 `bash deploy/scripts/verify-tech002.sh` 通过。
 - **当前状态**：完成（已提交，未推送；等待人工审查）
 - **下一步**：隔离环境真实 PG 恢复 + 密钥轮换演练；真机 RTSP/GB28181 烟雾测试；浏览器点击验证密钥管理与磁盘健康 UI。
+
+### 2026-11-24（EASYAVR-TECH-002 推送）
+- **已完成**：第二轮 8 个提交已从分支 `feature/easyavr-tech-002-security-reliability` 推送至 `origin`，远端新分支已创建并设为上游；本地 HEAD 与 `origin/feature/easyavr-tech-002-security-reliability` 同为 `b8a4dcc`。未合并 main，未自动开 PR。
+- **当前状态**：完成（已推送，等待人工审查/合并）
+- **下一步**：人工审查后合并到 main；真实 PG 恢复与密钥轮换演练、真机烟雾测试、UI 点击验证。
