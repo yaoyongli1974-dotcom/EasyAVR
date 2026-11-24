@@ -21,6 +21,13 @@
       <el-table-column prop="vendor" label="厂商" width="110" />
       <el-table-column prop="endpoint" label="Endpoint" min-width="220" />
       <el-table-column prop="model" label="模型" width="140" />
+      <el-table-column label="API Key" width="100">
+        <template #default="{ row }">
+          <el-tag :type="row.configured ? 'success' : 'info'" size="small" effect="plain">
+            {{ row.configured ? '已配置' : '未配置' }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="启用" width="80">
         <template #default="{ row }">
           <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '是' : '否' }}</el-tag>
@@ -50,7 +57,15 @@
           <el-input v-model="form.endpoint" placeholder="http://127.0.0.1:8000" />
         </el-form-item>
         <el-form-item label="模型"><el-input v-model="form.model" /></el-form-item>
-        <el-form-item label="API Key"><el-input v-model="form.apiKey" type="password" show-password placeholder="可留空（如 Ollama）" /></el-form-item>
+        <el-form-item :label="editing ? '修改 API Key' : 'API Key'">
+          <SecretField
+            v-model="form.apiKey"
+            v-model:clear="form.clearApiKey"
+            :configured="!!editing?.configured"
+            :editing="!!editing"
+            placeholder="可留空（如 Ollama）；输入新值即修改"
+          />
+        </el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -65,6 +80,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiApi } from '../api'
+import SecretField from '../components/SecretField.vue'
 import type { AIProvider } from '../types'
 
 const providers = ref<AIProvider[]>([])
@@ -72,7 +88,7 @@ const loading = ref(false)
 const saving = ref(false)
 const visible = ref(false)
 const editing = ref<AIProvider | null>(null)
-const form = reactive<Partial<AIProvider> & { apiKey?: string }>({ kind: 'vlm', enabled: true })
+const form = reactive<Partial<AIProvider> & { apiKey?: string; clearApiKey?: boolean }>({ kind: 'vlm', enabled: true })
 
 async function load() {
   loading.value = true
@@ -85,13 +101,16 @@ async function load() {
 
 function openCreate() {
   editing.value = null
-  Object.assign(form, { name: '', kind: 'vlm', vendor: '', endpoint: '', model: '', apiKey: '', enabled: true })
+  Object.assign(form, { name: '', kind: 'vlm', vendor: '', endpoint: '', model: '', apiKey: '', clearApiKey: false, enabled: true })
   visible.value = true
 }
 
 function openEdit(row: AIProvider) {
   editing.value = row
-  Object.assign(form, { ...row, apiKey: '' })
+  Object.assign(form, {
+    name: row.name, kind: row.kind, vendor: row.vendor, endpoint: row.endpoint,
+    model: row.model, enabled: row.enabled, apiKey: '', clearApiKey: false,
+  })
   visible.value = true
 }
 
@@ -105,8 +124,13 @@ function applyPreset() {
 async function save() {
   saving.value = true
   try {
-    if (editing.value) await aiApi.updateProvider(editing.value.id, form)
-    else await aiApi.createProvider(form)
+    const body = {
+      ...form,
+      apiKey: form.clearApiKey ? '' : (form.apiKey || ''),
+      clearApiKey: !!form.clearApiKey,
+    }
+    if (editing.value) await aiApi.updateProvider(editing.value.id, body)
+    else await aiApi.createProvider(body)
     ElMessage.success('已保存')
     visible.value = false
     load()

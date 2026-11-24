@@ -15,27 +15,58 @@ import (
 
 // ---- AI providers ----
 
+// aiProviderReq is the write payload for a provider. apiKey is write-only: an
+// empty value keeps the stored key, clearApiKey removes it.
+type aiProviderReq struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	Vendor      string `json:"vendor"`
+	Endpoint    string `json:"endpoint"`
+	APIKey      string `json:"apiKey"`
+	ClearAPIKey bool   `json:"clearApiKey"`
+	Model       string `json:"model"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// aiProviderView replaces the write-only API key with a presence flag.
+type aiProviderView struct {
+	model.AIProvider
+	Configured bool `json:"configured"`
+}
+
+func providerView(p model.AIProvider) aiProviderView {
+	return aiProviderView{AIProvider: p, Configured: p.APIKey != ""}
+}
+
 func (a *App) listProviders(c *gin.Context) {
 	var providers []model.AIProvider
 	a.db.Order("id DESC").Find(&providers)
-	ok(c, providers)
+	views := make([]aiProviderView, 0, len(providers))
+	for _, p := range providers {
+		views = append(views, providerView(p))
+	}
+	ok(c, views)
 }
 
 func (a *App) createProvider(c *gin.Context) {
-	var p model.AIProvider
-	if err := c.ShouldBindJSON(&p); err != nil {
+	var req aiProviderReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if p.Name == "" || p.Kind == "" {
+	if req.Name == "" || req.Kind == "" {
 		fail(c, http.StatusBadRequest, "name and kind are required")
 		return
+	}
+	p := model.AIProvider{
+		Name: req.Name, Kind: req.Kind, Vendor: req.Vendor, Endpoint: req.Endpoint,
+		APIKey: req.APIKey, Model: req.Model, Enabled: req.Enabled,
 	}
 	if err := a.db.Create(&p).Error; err != nil {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, p)
+	ok(c, providerView(p))
 }
 
 func (a *App) updateProvider(c *gin.Context) {
@@ -48,34 +79,44 @@ func (a *App) updateProvider(c *gin.Context) {
 		fail(c, http.StatusNotFound, "provider not found")
 		return
 	}
-	var req model.AIProvider
+	var req aiProviderReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	updates := map[string]any{}
 	if req.Name != "" {
-		updates["name"] = req.Name
+		p.Name = req.Name
 	}
 	if req.Kind != "" {
-		updates["kind"] = req.Kind
+		p.Kind = req.Kind
 	}
 	if req.Vendor != "" {
-		updates["vendor"] = req.Vendor
+		p.Vendor = req.Vendor
 	}
 	if req.Endpoint != "" {
-		updates["endpoint"] = req.Endpoint
-	}
-	if req.APIKey != "" {
-		updates["api_key"] = req.APIKey
+		p.Endpoint = req.Endpoint
 	}
 	if req.Model != "" {
-		updates["model"] = req.Model
+		p.Model = req.Model
 	}
-	updates["enabled"] = req.Enabled
-	a.db.Model(&p).Updates(updates)
-	a.db.First(&p, id)
-	ok(c, p)
+	switch {
+	case req.APIKey != "":
+		p.APIKey = req.APIKey
+	case req.ClearAPIKey:
+		p.APIKey = ""
+	}
+	p.Enabled = req.Enabled
+	// Save (not a map update) so the encryption hook sees the plaintext secret.
+	if err := a.db.Save(&p).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var fresh model.AIProvider
+	if err := a.db.First(&fresh, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "provider not found")
+		return
+	}
+	ok(c, providerView(fresh))
 }
 
 func (a *App) deleteProvider(c *gin.Context) {

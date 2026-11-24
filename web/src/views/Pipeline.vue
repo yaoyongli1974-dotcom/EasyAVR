@@ -132,7 +132,7 @@
       <el-table :data="samples" border size="small" max-height="420">
         <el-table-column label="图片" width="90">
           <template #default="{ row }">
-            <img v-if="row.imageUrl" :src="row.imageUrl" style="height: 40px; border-radius: 4px" />
+            <img v-if="sampleSrc[row.id]" :src="sampleSrc[row.id]" style="height: 40px; border-radius: 4px" />
             <span v-else>-</span>
           </template>
         </el-table-column>
@@ -240,13 +240,14 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { eventApi, pipelineApi } from '../api'
+import { eventApi, pipelineApi, resolveSnapshotSrc } from '../api'
 import type { AIEvent, AnnotationTask, Dataset, DatasetSample, PipelineStats, TrainingJob } from '../types'
 
 const tab = ref('datasets')
 const saving = ref(false)
 const datasets = ref<Dataset[]>([])
 const samples = ref<DatasetSample[]>([])
+const sampleSrc = ref<Record<number, string>>({})
 const annotations = ref<AnnotationTask[]>([])
 const jobs = ref<TrainingJob[]>([])
 const recentEvents = ref<AIEvent[]>([])
@@ -324,9 +325,21 @@ async function removeDataset(row: Dataset) {
   }
 }
 
+async function loadSamples(datasetId: number) {
+  const list = await pipelineApi.samples(datasetId)
+  samples.value = list
+  const srcs: Record<number, string> = {}
+  await Promise.all(list.map(async (s) => {
+    if (!s.imageUrl) return
+    const src = await resolveSnapshotSrc(s.imageUrl)
+    if (src) srcs[s.id] = src
+  }))
+  sampleSrc.value = srcs
+}
+
 async function openSamples(row: Dataset) {
   currentDataset.value = row
-  samples.value = await pipelineApi.samples(row.id)
+  await loadSamples(row.id)
   samplesVisible.value = true
 }
 
@@ -344,7 +357,7 @@ async function saveSample() {
   try {
     if (editSample.value) await pipelineApi.updateSample(currentDataset.value.id, editSample.value.id, sampleForm)
     else await pipelineApi.createSample(currentDataset.value.id, sampleForm)
-    samples.value = await pipelineApi.samples(currentDataset.value.id)
+    await loadSamples(currentDataset.value.id)
     sampleVisible.value = false
     load()
   } catch (e: any) {
@@ -358,7 +371,7 @@ async function removeSample(row: DatasetSample) {
   if (!currentDataset.value) return
   await ElMessageBox.confirm('删除该样本？', '确认', { type: 'warning' })
   await pipelineApi.removeSample(currentDataset.value.id, row.id)
-  samples.value = await pipelineApi.samples(currentDataset.value.id)
+  await loadSamples(currentDataset.value.id)
   load()
 }
 
@@ -383,7 +396,7 @@ async function doImport() {
   try {
     const r = await pipelineApi.importSamples(currentDataset.value.id, { eventIds: importEventIds.value, split: importSplit.value })
     ElMessage.success(`已导入 ${r.created} 条样本`)
-    samples.value = await pipelineApi.samples(currentDataset.value.id)
+    await loadSamples(currentDataset.value.id)
     importVisible.value = false
     load()
   } catch (e: any) {

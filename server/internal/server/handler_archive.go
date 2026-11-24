@@ -3,40 +3,65 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/easyavr/easyavr/internal/model"
 )
 
-// cloudStoreReq is the write payload for a storage config. SecretKey is
-// write-only: it is accepted here but never serialized back to clients.
+// cloudStoreReq is the write payload for a storage config. Both credentials
+// are write-only: empty values keep the stored ones; the clear flags remove
+// them. The test endpoint accepts inline credentials through this same shape.
 type cloudStoreReq struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Endpoint  string `json:"endpoint"`
-	Bucket    string `json:"bucket"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-	Region    string `json:"region"`
-	PathStyle *bool  `json:"pathStyle"`
-	Enabled   *bool  `json:"enabled"`
-	StoreID   uint   `json:"storeId"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Endpoint    string `json:"endpoint"`
+	Bucket      string `json:"bucket"`
+	AccessKey   string `json:"accessKey"`
+	SecretKey   string `json:"secretKey"`
+	ClearAccess bool   `json:"clearAccessKey"`
+	ClearSecret bool   `json:"clearSecretKey"`
+	Region      string `json:"region"`
+	PathStyle   *bool  `json:"pathStyle"`
+	Enabled     *bool  `json:"enabled"`
+	StoreID     uint   `json:"storeId"`
 }
 
-func maskStore(s model.CloudStore) model.CloudStore {
-	s.HasSecret = s.SecretKey != ""
-	s.SecretKey = ""
-	return s
+// cloudStoreView is the read shape: neither credential is serialized, only
+// presence flags are.
+type cloudStoreView struct {
+	ID           uint      `json:"id"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	Endpoint     string    `json:"endpoint"`
+	Bucket       string    `json:"bucket"`
+	Region       string    `json:"region"`
+	PathStyle    bool      `json:"pathStyle"`
+	Enabled      bool      `json:"enabled"`
+	HasAccessKey bool      `json:"hasAccessKey"`
+	HasSecret    bool      `json:"hasSecret"`
+}
+
+func storeView(s model.CloudStore) cloudStoreView {
+	return cloudStoreView{
+		ID: s.ID, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		Name: s.Name, Type: s.Type, Endpoint: s.Endpoint, Bucket: s.Bucket,
+		Region: s.Region, PathStyle: s.PathStyle, Enabled: s.Enabled,
+		HasAccessKey: s.AccessKey != "", HasSecret: s.SecretKey != "",
+	}
 }
 
 func (a *App) listStores(c *gin.Context) {
 	var items []model.CloudStore
 	a.db.Order("id DESC").Find(&items)
-	for i := range items {
-		items[i] = maskStore(items[i])
+	views := make([]cloudStoreView, 0, len(items))
+	for _, s := range items {
+		views = append(views, storeView(s))
 	}
-	ok(c, items)
+	ok(c, views)
 }
 
 func (a *App) createStore(c *gin.Context) {
@@ -73,7 +98,7 @@ func (a *App) createStore(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, maskStore(store))
+	ok(c, storeView(store))
 }
 
 func (a *App) updateStore(c *gin.Context) {
@@ -91,27 +116,40 @@ func (a *App) updateStore(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	updates := map[string]any{
-		"name": req.Name, "type": req.Type, "endpoint": req.Endpoint,
-		"bucket": req.Bucket, "access_key": req.AccessKey, "region": req.Region,
+	store.Name = req.Name
+	store.Type = req.Type
+	store.Endpoint = req.Endpoint
+	store.Bucket = req.Bucket
+	store.Region = req.Region
+	if store.Type == "" {
+		store.Type = "s3"
 	}
-	if req.Type == "" {
-		updates["type"] = "s3"
+	switch {
+	case req.AccessKey != "":
+		store.AccessKey = req.AccessKey
+	case req.ClearAccess:
+		store.AccessKey = ""
 	}
-	// An empty secret means "keep the stored one".
-	if req.SecretKey != "" {
-		updates["secret_key"] = req.SecretKey
+	switch {
+	case req.SecretKey != "":
+		store.SecretKey = req.SecretKey
+	case req.ClearSecret:
+		store.SecretKey = ""
 	}
 	if req.PathStyle != nil {
-		updates["path_style"] = *req.PathStyle
+		store.PathStyle = *req.PathStyle
 	}
 	if req.Enabled != nil {
-		updates["enabled"] = *req.Enabled
+		store.Enabled = *req.Enabled
 	}
-	a.db.Model(&store).Updates(updates)
+	// Save (not a map update) so the encryption hook sees the plaintext secret.
+	if err := a.db.Save(&store).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	a.db.First(&store, id)
 	a.arch.Invalidate(id)
-	ok(c, maskStore(store))
+	ok(c, storeView(store))
 }
 
 func (a *App) deleteStore(c *gin.Context) {

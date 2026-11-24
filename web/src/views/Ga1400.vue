@@ -27,13 +27,21 @@
         </el-table-column>
         <el-table-column prop="url" label="对端 URL" min-width="220" />
         <el-table-column prop="platformId" label="平台编码" min-width="160" />
+        <el-table-column label="密码" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.passwordConfigured ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.passwordConfigured ? '已配置' : '未配置' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag :type="row.online ? 'success' : 'info'">{{ row.online ? '在线' : '离线' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260">
+        <el-table-column label="操作" width="330">
           <template #default="{ row }">
+            <el-button link type="primary" @click="openCreate(row)">编辑</el-button>
             <el-button link type="primary" @click="test(row)">测试</el-button>
             <el-button link type="primary" @click="sync(row)">同步</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
@@ -60,7 +68,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="visible" title="新增 GA/T1400 级联" width="520px">
+    <el-dialog v-model="visible" :title="editing ? '编辑 GA/T1400 级联' : '新增 GA/T1400 级联'" width="520px">
       <el-form :model="form" label-width="100px">
         <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="方向">
@@ -72,7 +80,14 @@
         <el-form-item label="对端 URL"><el-input v-model="form.url" placeholder="http://host:port" /></el-form-item>
         <el-form-item label="平台编码"><el-input v-model="form.platformId" /></el-form-item>
         <el-form-item label="用户名"><el-input v-model="form.username" /></el-form-item>
-        <el-form-item label="密码"><el-input v-model="form.password" type="password" show-password /></el-form-item>
+        <el-form-item :label="editing ? '修改密码' : '密码'">
+          <SecretField
+            v-model="form.password"
+            v-model:clear="form.clearPassword"
+            :configured="!!editing?.passwordConfigured"
+            :editing="!!editing"
+          />
+        </el-form-item>
         <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -87,25 +102,41 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ga1400Api } from '../api'
+import SecretField from '../components/SecretField.vue'
 import type { GA1400Cascade, GA1400Subscription } from '../types'
 
 const cascades = ref<GA1400Cascade[]>([])
 const subs = ref<GA1400Subscription[]>([])
 const visible = ref(false)
-const form = reactive<Partial<GA1400Cascade> & { password?: string }>({ direction: 'up', enabled: true })
+const editing = ref<GA1400Cascade | null>(null)
+const form = reactive<Partial<GA1400Cascade> & { password?: string; clearPassword?: boolean }>({ direction: 'up', enabled: true })
 
 async function load() {
   ;[cascades.value, subs.value] = await Promise.all([ga1400Api.cascades(), ga1400Api.subscriptions()])
 }
 
-function openCreate() {
-  Object.assign(form, { name: '', direction: 'up', url: '', platformId: '', username: '', password: '', enabled: true })
+function openCreate(row?: GA1400Cascade) {
+  editing.value = row || null
+  Object.assign(form, row ? {
+    name: row.name, direction: row.direction, url: row.url,
+    platformId: row.platformId, username: row.username,
+    enabled: row.enabled, password: '', clearPassword: false,
+  } : {
+    name: '', direction: 'up', url: '', platformId: '', username: '',
+    password: '', clearPassword: false, enabled: true,
+  })
   visible.value = true
 }
 
 async function save() {
+  const body = {
+    ...form,
+    password: form.clearPassword ? '' : (form.password || ''),
+    clearPassword: !!form.clearPassword,
+  }
   try {
-    await ga1400Api.createCascade(form)
+    if (editing.value) await ga1400Api.updateCascade(editing.value.id, body)
+    else await ga1400Api.createCascade(body)
     ElMessage.success('已保存')
     visible.value = false
     load()

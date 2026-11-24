@@ -15,7 +15,8 @@
     <el-card v-loading="loading">
       <div v-if="snapshots.length" class="snap-grid">
         <div v-for="s in snapshots" :key="s.id" class="snap-item">
-          <img :src="s.url" @click="preview = s.url" />
+          <img v-if="s.url" :src="s.url" @click="openPreview(s)" />
+          <div v-else class="snap-placeholder">图片暂不可用</div>
           <div class="meta">
             <span>{{ format(s.takenAt) }}</span>
             <el-button link type="danger" size="small" @click="remove(s)">删除</el-button>
@@ -46,7 +47,8 @@
     </el-dialog>
 
     <el-dialog v-model="previewVisible" width="60%">
-      <img v-if="preview" :src="preview" style="width: 100%" />
+      <img v-if="preview && !previewFailed" :src="preview" style="width: 100%" @error="previewFailed = true" />
+      <el-empty v-else-if="preview" description="图片暂不可用" />
     </el-dialog>
   </div>
 </template>
@@ -54,7 +56,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { channelApi, snapshotApi } from '../api'
+import { channelApi, resolveSnapshotSrc, snapshotApi } from '../api'
 import type { Channel, Snapshot } from '../types'
 
 const channels = ref<Channel[]>([])
@@ -65,6 +67,7 @@ const page = ref(1)
 const pageSize = 24
 const loading = ref(false)
 const preview = ref('')
+const previewFailed = ref(false)
 const previewVisible = computed({
   get: () => !!preview.value,
   set: (v: boolean) => { if (!v) preview.value = '' },
@@ -76,7 +79,9 @@ async function load() {
   loading.value = true
   try {
     const res = await snapshotApi.list({ channelId: channelId.value, page: page.value, pageSize })
-    snapshots.value = res.items
+    snapshots.value = await Promise.all(
+      res.items.map(async (s) => ({ ...s, url: await resolveSnapshotSrc(s) })),
+    )
     total.value = res.total
   } finally {
     loading.value = false
@@ -117,6 +122,11 @@ async function remove(s: Snapshot) {
   load()
 }
 
+function openPreview(s: Snapshot) {
+  previewFailed.value = false
+  preview.value = s.url
+}
+
 function format(t: string) {
   return t ? new Date(t).toLocaleString() : ''
 }
@@ -144,6 +154,16 @@ onMounted(async () => {
   object-fit: cover;
   cursor: pointer;
   display: block;
+}
+.snap-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 .snap-item .meta {
   display: flex;

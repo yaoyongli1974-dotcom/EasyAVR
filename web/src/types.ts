@@ -124,6 +124,7 @@ export interface AIProvider {
   endpoint: string
   model: string
   enabled: boolean
+  configured?: boolean
 }
 
 export interface AITask {
@@ -440,6 +441,8 @@ export interface NotificationChannel {
   from: string
   to: string
   useTls: boolean
+  secretConfigured?: boolean
+  smtpPasswordConfigured?: boolean
 }
 
 export interface NotificationRule {
@@ -473,6 +476,7 @@ export interface GBCascade {
   enabled: boolean
   online: boolean
   lastHeartbeat: string
+  passwordConfigured?: boolean
 }
 
 export interface GBWhiteList {
@@ -483,6 +487,7 @@ export interface GBWhiteList {
   protocol: string
   enabled: boolean
   description: string
+  passwordConfigured?: boolean
 }
 
 export interface GBBlackList {
@@ -513,6 +518,7 @@ export interface GA1400Cascade {
   lastHeartbeat: string
   lastSyncAt: string
   syncCount: number
+  passwordConfigured?: boolean
 }
 
 export interface GA1400Subscription {
@@ -782,10 +788,10 @@ export interface CloudStore {
   type: string
   endpoint: string
   bucket: string
-  accessKey: string
   region: string
   pathStyle: boolean
   enabled: boolean
+  hasAccessKey?: boolean
   hasSecret?: boolean
   createdAt?: string
 }

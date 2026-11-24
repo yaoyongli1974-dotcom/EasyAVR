@@ -622,3 +622,26 @@
   1. 生产环境密钥与 env 的实际变更仍需人工审批，本批未连接生产服务器。
   2. `CloudStore.AccessKey` 目前仍通过 JSON 返回（历史 API），本批只做加密存储，API 掩码留给第三批 TASK-012。
 - **当前状态**：第二批完成并验收，按批次机制停止，等待人工审查后再进入第三批（TASK-005/011/012）。
+
+### 2026-11-24（EASYAVR-TECH-001 第三批 · 前端：TASK-012 敏感配置呈现）
+- **已完成**：按后端 DTO 契约（写字段留空=保留、显式 `clearXxx:true` 才清空；读字段仅布尔标记）统一五类敏感配置的前端呈现：
+  - 新增共用组件 `web/src/components/SecretField.vue`：展示「已配置/未配置」标记 +「修改密钥」密码框（`type=password`、`autocomplete=new-password`、从不预填真实密钥）+「清除密钥」勾选项（勾选即清空输入并发送 clear 标志）。
+  - 列表增加状态标记：AI 能力 `configured`；通知渠道 `secretConfigured`/`smtpPasswordConfigured`；GB 级联/白名单与 GA 级联 `passwordConfigured`；云存储 `hasAccessKey`/`hasSecret`（原只显示 SecretKey 一列）。
+  - 弹窗编辑改为显式字段赋值（不再 spread 行数据），从源头杜绝密钥回显；保存时按勾选组装 `clearApiKey`/`clearSecret`/`clearSmtpPassword`/`clearPassword`/`clearAccessKey`/`clearSecretKey` 载荷。
+  - 为 GB 级联、GB 白名单、GA 级联新增「编辑」入口（后端 PUT 路由已接线）；云存储 AccessKey 由明文框改为与 SecretKey 一致的密钥控件。
+  - API helper：`aiApi` 写入签名补 `clearApiKey`；`notifyApi` 补 `clearSecret`/`clearSmtpPassword`；`storageApi` 补 `accessKey`/`clearAccessKey`/`clearSecretKey`；`gbApi` 新增 `updateCascade`/`updateWhitelist` 且所有密码写入补 `clearPassword`；`ga1400Api` 新增 `updateCascade` 且补 `clearPassword`。`types.ts` 同步只读布尔字段并移除 `CloudStore.accessKey`（后端不再序列化）。
+  - 已逐字核对后端 `handler_ai.go`/`handler_notify.go`/`handler_gb.go`/`handler_ga1400.go`/`handler_archive.go` 的 JSON tag 与 router.go 的 PUT 路由。
+  - 顺带修正 GB SIP 密钥弹窗的过期文案（原称重启后恢复环境变量值，实际已加密持久化）。
+- **修改文件**：`web/src/components/SecretField.vue`（新增）、`web/src/api/index.ts`、`web/src/types.ts`、`web/src/views/{AiProviders,Notifications,GbDevices,Ga1400,Storages}.vue`。未改动 `server/` 与 `router.go`。
+- **验证结果**：`cd web && npm run build` 通过（vue-tsc 类型检查 + vite 构建，仅既有 vendor chunk 体积警告）。本任务按分工未运行 Go 测试。
+- **当前状态**：完成，等待主会话汇总审查。
+- **下一步**：并入第三批整体验收；如需端到端确认，启动后端后逐个编辑上述配置，验证「留空不改 / 显式清除 / 输入新值」三种路径与列表标记一致。
+
+### 2026-11-24（第三批：TASK-005 快照鉴权 / TASK-011 权限审计 / TASK-012 敏感配置）
+- **已完成**：
+  - TASK-005：取消公开的 `/snapshots/*` 静态托管；新增短效 HMAC 签名 URL（`GET /api/v1/snapshots/:id/access-url`，JWT + video 分组权限；`?url=` 兼容事件/样本里无快照 ID 的旧路径），`GET /api/v1/snapshot-access/:token` 无 JWT 但验签/过期/查库/路径约束后供图；list/delete 加可见通道过滤；前端 `resolveSnapshotSrc` 覆盖快照中心/AI 任务/地图/数据训练。
+  - TASK-011：router 收口录像/归档/快照/发现探测的分组权限；修复 `requireGroupPerm` 中通道分组 ID 被设备分组 Pluck 覆盖导致只绑通道时误 403 的缺陷（新增回归测试）；新增 `docs/security-permission-matrix.md` 权限矩阵。
+  - TASK-012：AI/通知/GB/GA/存储五类配置改用专用写 DTO，密钥字段只写、留空保留、显式 `clearXxx:true` 才清空；读接口仅返回 `configured`/`hasSecret`/`passwordConfigured`；`CloudStore.AccessKey` 不再明文序列化；补三条 PUT 路由（GB 级联/白名单、GA 级联）；前端新增 `SecretField.vue` 统一「已配置/未配置 / 修改密钥 / 清除密钥」。
+- **验证通过**：`gofmt -l` 无输出；`go build ./...`、`go vet ./...`、`go test ./...` 全绿（新增快照签名/路径穿越/权限、配置 DTO 加解密与权限用例）；`cd web && npm run build`（vue-tsc + vite）通过，仅既有 chunk 体积警告。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：等待人工审查后再进入第四批（TASK-006/007 AI 任务可靠性）；敏感配置的三条前端路径（留空不改/显式清除/输入新值）建议联调时点击复核。

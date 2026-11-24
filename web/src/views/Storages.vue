@@ -27,10 +27,18 @@
             <span>{{ row.pathStyle ? 'path-style' : 'virtual-host' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="密钥" width="100">
+        <el-table-column label="AccessKey" width="100">
           <template #default="{ row }">
-            <el-tag v-if="row.hasSecret" type="success" size="small">已设置</el-tag>
-            <el-tag v-else type="danger" size="small">未设置</el-tag>
+            <el-tag :type="row.hasAccessKey ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.hasAccessKey ? '已配置' : '未配置' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="SecretKey" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.hasSecret ? 'success' : 'info'" size="small" effect="plain">
+              {{ row.hasSecret ? '已配置' : '未配置' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="210" fixed="right">
@@ -56,13 +64,22 @@
           <el-input v-model="form.endpoint" placeholder="http://127.0.0.1:9000" />
         </el-form-item>
         <el-form-item label="存储桶"><el-input v-model="form.bucket" placeholder="easyavr-archive" /></el-form-item>
-        <el-form-item label="AccessKey"><el-input v-model="form.accessKey" /></el-form-item>
-        <el-form-item label="SecretKey">
-          <el-input
+        <el-form-item :label="editing ? '修改 AccessKey' : 'AccessKey'">
+          <SecretField
+            v-model="form.accessKey"
+            v-model:clear="form.clearAccessKey"
+            :configured="!!editing?.hasAccessKey"
+            :editing="!!editing"
+            placeholder="请输入 AccessKey"
+          />
+        </el-form-item>
+        <el-form-item :label="editing ? '修改 SecretKey' : 'SecretKey'">
+          <SecretField
             v-model="form.secretKey"
-            type="password"
-            show-password
-            :placeholder="editing ? '留空保持原密钥' : '请输入 SecretKey'"
+            v-model:clear="form.clearSecretKey"
+            :configured="!!editing?.hasSecret"
+            :editing="!!editing"
+            placeholder="请输入 SecretKey"
           />
         </el-form-item>
         <el-form-item label="区域">
@@ -85,6 +102,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { storageApi } from '../api'
+import SecretField from '../components/SecretField.vue'
 import type { CloudStore } from '../types'
 
 const stores = ref<CloudStore[]>([])
@@ -94,7 +112,12 @@ const testing = reactive<Record<number, boolean>>({})
 const visible = ref(false)
 const saving = ref(false)
 const editing = ref<CloudStore | null>(null)
-const form = reactive<Partial<CloudStore> & { secretKey?: string }>({})
+const form = reactive<Partial<CloudStore> & {
+  accessKey?: string
+  secretKey?: string
+  clearAccessKey?: boolean
+  clearSecretKey?: boolean
+}>({})
 
 async function load() {
   loading.value = true
@@ -110,11 +133,15 @@ async function load() {
 function open(row?: CloudStore) {
   editing.value = row || null
   if (row) {
-    Object.assign(form, { ...row, secretKey: '' })
+    Object.assign(form, {
+      name: row.name, type: row.type, endpoint: row.endpoint, bucket: row.bucket,
+      region: row.region, pathStyle: row.pathStyle, enabled: row.enabled,
+      accessKey: '', clearAccessKey: false, secretKey: '', clearSecretKey: false,
+    })
   } else {
     Object.assign(form, {
-      id: undefined, name: '', type: 's3', endpoint: '', bucket: '',
-      accessKey: '', secretKey: '', region: '', pathStyle: true,
+      name: '', type: 's3', endpoint: '', bucket: '', region: '', pathStyle: true, enabled: true,
+      accessKey: '', clearAccessKey: false, secretKey: '', clearSecretKey: false,
     })
   }
   visible.value = true
@@ -125,18 +152,22 @@ async function save() {
     ElMessage.warning('请填写名称、Endpoint 和存储桶')
     return
   }
-  if (!form.accessKey || (!editing.value && !form.secretKey)) {
+  if (!editing.value && (!form.accessKey || !form.secretKey)) {
     ElMessage.warning('请填写 AccessKey 与 SecretKey')
     return
   }
   saving.value = true
   try {
-    if (editing.value) {
-      const body = { ...form, secretKey: form.secretKey || undefined }
-      await storageApi.update(editing.value.id, body)
-    } else {
-      await storageApi.create(form)
+    const body = {
+      name: form.name, type: form.type, endpoint: form.endpoint, bucket: form.bucket,
+      accessKey: form.clearAccessKey ? '' : (form.accessKey || ''),
+      secretKey: form.clearSecretKey ? '' : (form.secretKey || ''),
+      clearAccessKey: !!form.clearAccessKey,
+      clearSecretKey: !!form.clearSecretKey,
+      region: form.region, pathStyle: form.pathStyle, enabled: form.enabled,
     }
+    if (editing.value) await storageApi.update(editing.value.id, body)
+    else await storageApi.create(body)
     ElMessage.success('已保存')
     visible.value = false
     load()

@@ -162,7 +162,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { aiApi, channelApi, snapshotApi } from '../api'
+import { aiApi, channelApi, resolveSnapshotSrc, snapshotApi } from '../api'
 import type { AIProvider, AITask, Channel } from '../types'
 
 const tasks = ref<AITask[]>([])
@@ -384,7 +384,13 @@ async function captureRoi() {
   imgReady.value = false
   try {
     const s = await snapshotApi.capture(roiChannelId.value)
-    roiUrl.value = `${s.url}${s.url.includes('?') ? '&' : '?'}t=${Date.now()}`
+    const src = await resolveSnapshotSrc(s)
+    if (!src) {
+      roiFailed.value = true
+      roiUrl.value = ''
+      return
+    }
+    roiUrl.value = `${src}${src.includes('?') ? '&' : '?'}t=${Date.now()}`
   } catch {
     roiFailed.value = true
     roiUrl.value = ''

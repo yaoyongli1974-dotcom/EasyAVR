@@ -174,8 +174,8 @@
           <el-descriptions-item label="发生时间" :span="2">{{ formatTime(selectedEvent.occurredAt) }}</el-descriptions-item>
           <el-descriptions-item label="摘要" :span="2">{{ selectedEvent.summary || '-' }}</el-descriptions-item>
         </el-descriptions>
-        <div v-if="selectedEvent.snapshot" style="margin-top: 12px">
-          <img :src="selectedEvent.snapshot" style="max-width: 100%; border-radius: 8px" />
+        <div v-if="eventSnapshotSrc" style="margin-top: 12px">
+          <img :src="eventSnapshotSrc" style="max-width: 100%; border-radius: 8px" />
         </div>
         <div style="margin-top: 12px">
           <div v-if="playLoading" style="color: var(--el-text-color-secondary)">加载视频地址…</div>
@@ -193,7 +193,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, reactive, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { mapApi, deviceApi, groupApi, channelApi } from '../api'
+import { mapApi, deviceApi, groupApi, channelApi, resolveSnapshotSrc } from '../api'
 import type { Device, Channel, TrackPoint, TrackStats, MapEvent, MapEventStats, GeoSuggestion, DeviceGroup } from '../types'
 import { VideoPlay, Location, DataBoard, Bell, Aim } from '@element-plus/icons-vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
@@ -257,6 +257,7 @@ const eventStats = ref<MapEventStats>({ total: 0, located: 0, byType: {}, byLeve
 const eventMarkers = ref<L.CircleMarker[]>([])
 const eventDialogVisible = ref(false)
 const selectedEvent = ref<MapEvent | null>(null)
+const eventSnapshotSrc = ref('')
 const playUrls = ref<Record<string, string>>({})
 const playLoading = ref(false)
 const hasPlayUrls = computed(() => Object.keys(playUrls.value).length > 0)
@@ -650,6 +651,12 @@ function clearEventMarkers() {
 
 async function openEvent(ev: MapEvent) {
   selectedEvent.value = ev
+  eventSnapshotSrc.value = ''
+  if (ev.snapshot) {
+    resolveSnapshotSrc(ev.snapshot).then((src) => {
+      if (selectedEvent.value?.id === ev.id) eventSnapshotSrc.value = src
+    })
+  }
   playUrls.value = {}
   eventDialogVisible.value = true
   map.value?.setView([ev.latitude, ev.longitude], 16)

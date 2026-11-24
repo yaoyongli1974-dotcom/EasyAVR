@@ -191,9 +191,9 @@ export const videoApi = {
 
 export const aiApi = {
   providers: () => unwrap<AIProvider[]>(client.get('/ai/providers')),
-  createProvider: (body: Partial<AIProvider> & { apiKey?: string }) =>
+  createProvider: (body: Partial<AIProvider> & { apiKey?: string; clearApiKey?: boolean }) =>
     unwrap<AIProvider>(client.post('/ai/providers', body)),
-  updateProvider: (id: number, body: Partial<AIProvider> & { apiKey?: string }) =>
+  updateProvider: (id: number, body: Partial<AIProvider> & { apiKey?: string; clearApiKey?: boolean }) =>
     unwrap<AIProvider>(client.put(`/ai/providers/${id}`, body)),
   removeProvider: (id: number) => unwrap<{ id: number }>(client.delete(`/ai/providers/${id}`)),
 
@@ -285,10 +285,18 @@ export const transcodeApi = {
 
 export const storageApi = {
   list: () => unwrap<CloudStore[]>(client.get('/storages')),
-  create: (body: Partial<CloudStore> & { secretKey?: string }) =>
-    unwrap<CloudStore>(client.post('/storages', body)),
-  update: (id: number, body: Partial<CloudStore> & { secretKey?: string }) =>
-    unwrap<CloudStore>(client.put(`/storages/${id}`, body)),
+  create: (body: Partial<CloudStore> & {
+    accessKey?: string
+    secretKey?: string
+    clearAccessKey?: boolean
+    clearSecretKey?: boolean
+  }) => unwrap<CloudStore>(client.post('/storages', body)),
+  update: (id: number, body: Partial<CloudStore> & {
+    accessKey?: string
+    secretKey?: string
+    clearAccessKey?: boolean
+    clearSecretKey?: boolean
+  }) => unwrap<CloudStore>(client.put(`/storages/${id}`, body)),
   remove: (id: number) => unwrap<{ id: number }>(client.delete(`/storages/${id}`)),
   test: (id: number) => unwrap<{ id: number; ok: boolean }>(client.post(`/storages/${id}/test`, {})),
 }
@@ -302,6 +310,62 @@ export const snapshotApi = {
     unwrap<Page<Snapshot>>(client.get('/snapshots', { params })),
   capture: (channelId: number) => unwrap<Snapshot>(client.post(`/channels/${channelId}/snapshot`)),
   remove: (id: number) => unwrap<{ id: number }>(client.delete(`/snapshots/${id}`)),
+  accessUrl: (id: number, url?: string) =>
+    unwrap<{ url: string; expiresAt: string | number }>(
+      client.get(`/snapshots/${id}/access-url`, { params: url ? { url } : undefined }),
+    ),
+}
+
+/** Minimal shape needed to turn a stored snapshot path into a displayable src. */
+export interface SnapshotSource {
+  id?: number | string
+  url?: string
+}
+
+const SNAPSHOT_EXPIRY_SKEW_MS = 30_000
+const snapshotSrcCache = new Map<string, { url: string; expiresAt: number }>()
+const snapshotSrcPending = new Map<string, Promise<string>>()
+
+/**
+ * Resolve an image src for display. Stored `/snapshots/...` paths need a
+ * short-lived signed URL; anything else (external images) is returned as-is.
+ * Failures resolve to '' so callers can show an empty state instead of a broken
+ * link — tokens are never logged.
+ */
+export async function resolveSnapshotSrc(item: SnapshotSource | string | null | undefined): Promise<string> {
+  const raw = typeof item === 'string' ? item : item?.url || ''
+  if (!raw || !raw.startsWith('/snapshots/')) return raw || ''
+
+  const value = typeof item === 'object' && item ? Number(item.id) : 0
+  const id = Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
+
+  const now = Date.now()
+  const cached = snapshotSrcCache.get(raw)
+  if (cached && cached.expiresAt - SNAPSHOT_EXPIRY_SKEW_MS > now) return cached.url
+
+  let pending = snapshotSrcPending.get(raw)
+  if (!pending) {
+    pending = snapshotApi
+      .accessUrl(id, raw)
+      .then((res) => {
+        const expiresAt = typeof res.expiresAt === 'number' ? res.expiresAt : Date.parse(res.expiresAt)
+        if (res.url && Number.isFinite(expiresAt) && expiresAt - SNAPSHOT_EXPIRY_SKEW_MS > Date.now()) {
+          snapshotSrcCache.set(raw, { url: res.url, expiresAt })
+        } else {
+          snapshotSrcCache.delete(raw)
+        }
+        return res.url || ''
+      })
+      .catch(() => {
+        snapshotSrcCache.delete(raw)
+        return ''
+      })
+      .finally(() => {
+        snapshotSrcPending.delete(raw)
+      })
+    snapshotSrcPending.set(raw, pending)
+  }
+  return pending
 }
 
 export const gbApi = {
@@ -311,14 +375,18 @@ export const gbApi = {
   refresh: (gbid: string) => unwrap<{ deviceId: string }>(client.post(`/gb/devices/${gbid}/refresh`)),
 
   cascades: () => unwrap<GBCascade[]>(client.get('/gb/cascades')),
-  createCascade: (body: Partial<GBCascade> & { password?: string }) =>
+  createCascade: (body: Partial<GBCascade> & { password?: string; clearPassword?: boolean }) =>
     unwrap<GBCascade>(client.post('/gb/cascades', body)),
+  updateCascade: (id: number, body: Partial<GBCascade> & { password?: string; clearPassword?: boolean }) =>
+    unwrap<GBCascade>(client.put(`/gb/cascades/${id}`, body)),
   refreshCascade: (id: number) => unwrap<{ id: number }>(client.post(`/gb/cascades/${id}/refresh`)),
   removeCascade: (id: number) => unwrap<{ id: number }>(client.delete(`/gb/cascades/${id}`)),
 
   whitelist: () => unwrap<GBWhiteList[]>(client.get('/gb/whitelist')),
-  createWhitelist: (body: Partial<GBWhiteList> & { password?: string }) =>
+  createWhitelist: (body: Partial<GBWhiteList> & { password?: string; clearPassword?: boolean }) =>
     unwrap<GBWhiteList>(client.post('/gb/whitelist', body)),
+  updateWhitelist: (id: number, body: Partial<GBWhiteList> & { password?: string; clearPassword?: boolean }) =>
+    unwrap<GBWhiteList>(client.put(`/gb/whitelist/${id}`, body)),
   removeWhitelist: (id: number) => unwrap<{ id: number }>(client.delete(`/gb/whitelist/${id}`)),
 
   blacklist: () => unwrap<GBBlackList[]>(client.get('/gb/blacklist')),
@@ -329,10 +397,18 @@ export const gbApi = {
 
 export const notifyApi = {
   channels: () => unwrap<NotificationChannel[]>(client.get('/notify/channels')),
-  createChannel: (body: Partial<NotificationChannel> & { secret?: string; smtpPassword?: string }) =>
-    unwrap<NotificationChannel>(client.post('/notify/channels', body)),
-  updateChannel: (id: number, body: Partial<NotificationChannel> & { secret?: string; smtpPassword?: string }) =>
-    unwrap<NotificationChannel>(client.put(`/notify/channels/${id}`, body)),
+  createChannel: (body: Partial<NotificationChannel> & {
+    secret?: string
+    clearSecret?: boolean
+    smtpPassword?: string
+    clearSmtpPassword?: boolean
+  }) => unwrap<NotificationChannel>(client.post('/notify/channels', body)),
+  updateChannel: (id: number, body: Partial<NotificationChannel> & {
+    secret?: string
+    clearSecret?: boolean
+    smtpPassword?: string
+    clearSmtpPassword?: boolean
+  }) => unwrap<NotificationChannel>(client.put(`/notify/channels/${id}`, body)),
   removeChannel: (id: number) => unwrap<{ id: number }>(client.delete(`/notify/channels/${id}`)),
   testChannel: (id: number) => unwrap<{ id: number; sent: boolean }>(client.post(`/notify/channels/${id}/test`)),
 
@@ -414,8 +490,10 @@ export const clusterApi = {
 
 export const ga1400Api = {
   cascades: () => unwrap<GA1400Cascade[]>(client.get('/ga1400/cascades')),
-  createCascade: (body: Partial<GA1400Cascade> & { password?: string }) =>
+  createCascade: (body: Partial<GA1400Cascade> & { password?: string; clearPassword?: boolean }) =>
     unwrap<GA1400Cascade>(client.post('/ga1400/cascades', body)),
+  updateCascade: (id: number, body: Partial<GA1400Cascade> & { password?: string; clearPassword?: boolean }) =>
+    unwrap<GA1400Cascade>(client.put(`/ga1400/cascades/${id}`, body)),
   testCascade: (id: number) => unwrap<{ id: number; ok: boolean }>(client.post(`/ga1400/cascades/${id}/test`)),
   syncCascade: (id: number) => unwrap<{ id: number; count: number }>(client.post(`/ga1400/cascades/${id}/sync`)),
   removeCascade: (id: number) => unwrap<{ id: number }>(client.delete(`/ga1400/cascades/${id}`)),

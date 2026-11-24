@@ -455,16 +455,20 @@ func (a *App) requireGroupPerm(perm string) gin.HandlerFunc {
 			}
 		}
 		if channelID > 0 {
+			var channelGroups []uint
 			a.db.Model(&model.ChannelGroupChannel{}).
 				Where("channel_id = ?", channelID).
-				Pluck("group_id", &groupIDs)
+				Pluck("group_id", &channelGroups)
+			groupIDs = append(groupIDs, channelGroups...)
 			// Channel -> Device -> Group
 			var did uint
 			a.db.Model(&model.Channel{}).Where("id = ?", channelID).Pluck("device_id", &did)
 			if did > 0 {
+				var deviceGroups []uint
 				a.db.Model(&model.DeviceGroupDevice{}).
 					Where("device_id = ?", did).
-					Pluck("group_id", &groupIDs)
+					Pluck("group_id", &deviceGroups)
+				groupIDs = append(groupIDs, deviceGroups...)
 				var dg uint
 				a.db.Model(&model.Device{}).Where("id = ?", did).Pluck("group_id", &dg)
 				if dg > 0 {

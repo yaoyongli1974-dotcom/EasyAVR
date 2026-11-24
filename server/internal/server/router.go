@@ -26,6 +26,8 @@ func (a *App) buildRouter() *gin.Engine {
 	// Public playback auth helpers (edge / ZLMediaKit on_play hook).
 	api.GET("/play/verify", a.verifyPlay)
 	api.POST("/zlm/on_play", a.zlmOnPlay)
+	// Short-lived signed snapshot access (no JWT; token is bound to a snapshot ID).
+	api.GET("/snapshot-access/:token", a.snapshotSignedAccess)
 
 	authGroup := api.Group("/auth")
 	authGroup.POST("/login", a.login)
@@ -120,13 +122,15 @@ func (a *App) buildRouter() *gin.Engine {
 	d.POST("/:id/check", a.checkDevice)
 	d.POST("/check", a.checkDevices)
 
-	authed.POST("/discovery/scan", a.discoverDevices)
+	authed.POST("/discovery/scan", a.discoverDevices, a.requireGroupPerm("device"))
 
 	onvifGroup := authed.Group("/onvif")
+	onvifGroup.Use(a.requireGroupPerm("device"))
 	onvifGroup.POST("/probe", a.onvifProbe)
 	onvifGroup.POST("/import", a.onvifImport)
 
 	isapiGroup := authed.Group("/isapi")
+	isapiGroup.Use(a.requireGroupPerm("device"))
 	isapiGroup.POST("/probe", a.isapiProbe)
 	isapiGroup.POST("/import", a.isapiImport)
 
@@ -158,13 +162,15 @@ func (a *App) buildRouter() *gin.Engine {
 	ch.GET("/:id/traffic", a.getChannelTraffic)
 	ch.GET("/:id/status-logs", a.listChannelStatusLogs)
 
-	authed.GET("/recordings", a.listRecordings)
-	authed.POST("/recordings/cleanup", a.cleanupRecordings)
-	authed.PUT("/recordings/:id/mark", a.markRecording)
-	authed.DELETE("/recordings/:id", a.deleteRecording)
-	authed.POST("/recordings/:id/archive", a.archiveRecording)
-	authed.GET("/recordings/:id/archives", a.listRecordingArchives)
-	authed.GET("/archives", a.listArchives)
+	rec := authed.Group("/recordings")
+	rec.Use(a.requireGroupPerm("video"))
+	rec.GET("", a.listRecordings)
+	rec.POST("/cleanup", a.cleanupRecordings)
+	rec.PUT("/:id/mark", a.markRecording)
+	rec.DELETE("/:id", a.deleteRecording)
+	rec.POST("/:id/archive", a.archiveRecording)
+	rec.GET("/:id/archives", a.listRecordingArchives)
+	authed.GET("/archives", a.listArchives).Use(a.requireGroupPerm("video"))
 
 	// 录像云归档: S3 兼容对象存储（MinIO/OSS/COS）。
 	storages := authed.Group("/storages")
@@ -186,8 +192,9 @@ func (a *App) buildRouter() *gin.Engine {
 	tr.POST("/jobs/:id/start", a.startTranscodeJob)
 	tr.POST("/jobs/:id/stop", a.stopTranscodeJob)
 
-	authed.GET("/snapshots", a.listSnapshots)
-	authed.DELETE("/snapshots/:id", a.deleteSnapshot)
+	authed.GET("/snapshots", a.listSnapshots, a.requireGroupPerm("video"))
+	authed.DELETE("/snapshots/:id", a.deleteSnapshot, a.requireGroupPerm("video"))
+	authed.GET("/snapshots/:id/access-url", a.snapshotAccessURL, a.requireGroupPerm("video"))
 
 	// GB28181 routes with policy
 	gbGroup := authed.Group("/gb")
@@ -198,10 +205,12 @@ func (a *App) buildRouter() *gin.Engine {
 	gbGroup.POST("/devices/:gbid/mobile-position", a.queryGBMobilePosition)
 	gbGroup.GET("/cascades", a.listCascades)
 	gbGroup.POST("/cascades", a.createCascade)
+	gbGroup.PUT("/cascades/:id", a.updateCascade)
 	gbGroup.POST("/cascades/:id/refresh", a.refreshCascade)
 	gbGroup.DELETE("/cascades/:id", a.deleteCascade)
 	gbGroup.GET("/whitelist", a.listWhiteList)
 	gbGroup.POST("/whitelist", a.createWhiteList)
+	gbGroup.PUT("/whitelist/:id", a.updateWhiteList)
 	gbGroup.DELETE("/whitelist/:id", a.deleteWhiteList)
 	gbGroup.GET("/blacklist", a.listBlackList)
 	gbGroup.POST("/blacklist", a.createBlackList)
@@ -216,6 +225,7 @@ func (a *App) buildRouter() *gin.Engine {
 	ga1400Group.Use(a.requirePolicy("ga1400", "*", nil))
 	ga1400Group.GET("/cascades", a.listGACascades)
 	ga1400Group.POST("/cascades", a.createGACascade)
+	ga1400Group.PUT("/cascades/:id", a.updateGACascade)
 	ga1400Group.POST("/cascades/:id/test", a.testGACascade)
 	ga1400Group.POST("/cascades/:id/sync", a.syncGACascade)
 	ga1400Group.DELETE("/cascades/:id", a.deleteGACascade)
@@ -398,10 +408,8 @@ func (a *App) buildRouter() *gin.Engine {
 
 	authed.GET("/system/info", a.systemInfo)
 
-	// Snapshot images are served without auth so they can be embedded in <img>.
-	if a.snaps != nil {
-		r.Static("/snapshots", a.snaps.Dir())
-	}
+	// Snapshot images are no longer served as a public static directory (TASK-005).
+	// Access goes through the short-lived signed /api/v1/snapshot-access/:token route.
 
 	// Optionally serve a built frontend from web/dist.
 	a.mountStatic(r)

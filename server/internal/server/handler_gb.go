@@ -104,21 +104,53 @@ func (a *App) queryGBMobilePosition(c *gin.Context) {
 
 // ---- GB28181 cascade (upper platforms) ----
 
+// gbCascadeReq is the write payload for a cascade. password is write-only: an
+// empty value keeps the stored password, clearPassword removes it.
+type gbCascadeReq struct {
+	Name          string `json:"name"`
+	TargetID      string `json:"targetId"`
+	LocalID       string `json:"localId"`
+	TargetIP      string `json:"targetIp"`
+	TargetPort    int    `json:"targetPort"`
+	Password      string `json:"password"`
+	ClearPassword bool   `json:"clearPassword"`
+	Transport     string `json:"transport"`
+	Enabled       bool   `json:"enabled"`
+}
+
+type gbCascadeView struct {
+	model.GBCascade
+	PasswordConfigured bool `json:"passwordConfigured"`
+}
+
+func cascadeView(item model.GBCascade) gbCascadeView {
+	return gbCascadeView{GBCascade: item, PasswordConfigured: item.Password != ""}
+}
+
 func (a *App) listCascades(c *gin.Context) {
 	var items []model.GBCascade
 	a.db.Order("id DESC").Find(&items)
-	ok(c, items)
+	views := make([]gbCascadeView, 0, len(items))
+	for _, item := range items {
+		views = append(views, cascadeView(item))
+	}
+	ok(c, views)
 }
 
 func (a *App) createCascade(c *gin.Context) {
-	var item model.GBCascade
-	if err := c.ShouldBindJSON(&item); err != nil {
+	var req gbCascadeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if item.TargetID == "" || item.TargetIP == "" {
+	if req.TargetID == "" || req.TargetIP == "" {
 		fail(c, http.StatusBadRequest, "targetId and targetIp are required")
 		return
+	}
+	item := model.GBCascade{
+		Name: req.Name, TargetID: req.TargetID, LocalID: req.LocalID,
+		TargetIP: req.TargetIP, TargetPort: req.TargetPort, Password: req.Password,
+		Transport: req.Transport, Enabled: req.Enabled,
 	}
 	if item.LocalID == "" {
 		item.LocalID = a.cfg.GB.ID
@@ -130,10 +162,73 @@ func (a *App) createCascade(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if a.gb != nil && item.Enabled {
-		a.gb.EnsureCascade(item)
+	// Reload so outbound registration uses the decrypted password.
+	var fresh model.GBCascade
+	if err := a.db.First(&fresh, item.ID).Error; err != nil {
+		fresh = item
+	} else if a.gb != nil && fresh.Enabled {
+		a.gb.EnsureCascade(fresh)
 	}
-	ok(c, item)
+	ok(c, cascadeView(fresh))
+}
+
+func (a *App) updateCascade(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var item model.GBCascade
+	if err := a.db.First(&item, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "cascade not found")
+		return
+	}
+	var req gbCascadeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Name != "" {
+		item.Name = req.Name
+	}
+	if req.TargetID != "" {
+		item.TargetID = req.TargetID
+	}
+	if req.LocalID != "" {
+		item.LocalID = req.LocalID
+	}
+	if req.TargetIP != "" {
+		item.TargetIP = req.TargetIP
+	}
+	if req.TargetPort != 0 {
+		item.TargetPort = req.TargetPort
+	}
+	if req.Transport != "" {
+		item.Transport = req.Transport
+	}
+	switch {
+	case req.Password != "":
+		item.Password = req.Password
+	case req.ClearPassword:
+		item.Password = ""
+	}
+	item.Enabled = req.Enabled
+	if err := a.db.Save(&item).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var fresh model.GBCascade
+	if err := a.db.First(&fresh, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "cascade not found")
+		return
+	}
+	if a.gb != nil {
+		if fresh.Enabled {
+			a.gb.EnsureCascade(fresh)
+		} else {
+			a.gb.RemoveCascade(id)
+		}
+	}
+	ok(c, cascadeView(fresh))
 }
 
 func (a *App) deleteCascade(c *gin.Context) {
@@ -168,21 +263,49 @@ func (a *App) refreshCascade(c *gin.Context) {
 
 // ---- GB white list ----
 
+type gbWhiteListReq struct {
+	DeviceID      string `json:"deviceId"`
+	IP            string `json:"ip"`
+	Port          int    `json:"port"`
+	Protocol      string `json:"protocol"`
+	Password      string `json:"password"`
+	ClearPassword bool   `json:"clearPassword"`
+	Enabled       bool   `json:"enabled"`
+	Description   string `json:"description"`
+}
+
+type gbWhiteListView struct {
+	model.GBWhiteList
+	PasswordConfigured bool `json:"passwordConfigured"`
+}
+
+func whiteListView(item model.GBWhiteList) gbWhiteListView {
+	return gbWhiteListView{GBWhiteList: item, PasswordConfigured: item.Password != ""}
+}
+
 func (a *App) listWhiteList(c *gin.Context) {
 	var items []model.GBWhiteList
 	a.db.Order("id DESC").Find(&items)
-	ok(c, items)
+	views := make([]gbWhiteListView, 0, len(items))
+	for _, item := range items {
+		views = append(views, whiteListView(item))
+	}
+	ok(c, views)
 }
 
 func (a *App) createWhiteList(c *gin.Context) {
-	var item model.GBWhiteList
-	if err := c.ShouldBindJSON(&item); err != nil {
+	var req gbWhiteListReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		fail(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if item.DeviceID == "" {
+	if req.DeviceID == "" {
 		fail(c, http.StatusBadRequest, "deviceId is required")
 		return
+	}
+	item := model.GBWhiteList{
+		DeviceID: req.DeviceID, IP: req.IP, Port: req.Port, Protocol: req.Protocol,
+		Password: req.Password, Enabled: req.Enabled, Description: req.Description,
 	}
 	if item.Protocol == "" {
 		item.Protocol = "GB28181"
@@ -191,7 +314,56 @@ func (a *App) createWhiteList(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(c, item)
+	ok(c, whiteListView(item))
+}
+
+func (a *App) updateWhiteList(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var item model.GBWhiteList
+	if err := a.db.First(&item, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "whitelist entry not found")
+		return
+	}
+	var req gbWhiteListReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.DeviceID != "" {
+		item.DeviceID = req.DeviceID
+	}
+	if req.IP != "" {
+		item.IP = req.IP
+	}
+	if req.Port != 0 {
+		item.Port = req.Port
+	}
+	if req.Protocol != "" {
+		item.Protocol = req.Protocol
+	}
+	if req.Description != "" {
+		item.Description = req.Description
+	}
+	switch {
+	case req.Password != "":
+		item.Password = req.Password
+	case req.ClearPassword:
+		item.Password = ""
+	}
+	item.Enabled = req.Enabled
+	if err := a.db.Save(&item).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var fresh model.GBWhiteList
+	if err := a.db.First(&fresh, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "whitelist entry not found")
+		return
+	}
+	ok(c, whiteListView(fresh))
 }
 
 func (a *App) deleteWhiteList(c *gin.Context) {

@@ -14,6 +14,22 @@
           <el-table-column prop="type" label="类型" width="100" />
           <el-table-column prop="url" label="Webhook URL" min-width="200" show-overflow-tooltip />
           <el-table-column prop="to" label="收件人" min-width="140" show-overflow-tooltip />
+          <el-table-column label="Webhook 密钥" width="110">
+            <template #default="{ row }">
+              <el-tag v-if="row.type === 'webhook'" :type="row.secretConfigured ? 'success' : 'info'" size="small" effect="plain">
+                {{ row.secretConfigured ? '已配置' : '未配置' }}
+              </el-tag>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="邮箱密码" width="110">
+            <template #default="{ row }">
+              <el-tag v-if="row.type === 'email'" :type="row.smtpPasswordConfigured ? 'success' : 'info'" size="small" effect="plain">
+                {{ row.smtpPasswordConfigured ? '已配置' : '未配置' }}
+              </el-tag>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
           <el-table-column label="启用" width="80">
             <template #default="{ row }">
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '是' : '否' }}</el-tag>
@@ -68,13 +84,29 @@
         </el-form-item>
         <template v-if="channelForm.type === 'webhook'">
           <el-form-item label="URL"><el-input v-model="channelForm.url" placeholder="https://..." /></el-form-item>
-          <el-form-item label="密钥"><el-input v-model="channelForm.secret" placeholder="X-EasyAVR-Secret（可选）" /></el-form-item>
+          <el-form-item :label="editingChannel ? '修改密钥' : '密钥'">
+            <SecretField
+              v-model="channelForm.secret"
+              v-model:clear="channelForm.clearSecret"
+              :configured="!!editingChannel?.secretConfigured"
+              :editing="!!editingChannel"
+              placeholder="X-EasyAVR-Secret（可选）"
+            />
+          </el-form-item>
         </template>
         <template v-else>
           <el-form-item label="SMTP 主机"><el-input v-model="channelForm.smtpHost" /></el-form-item>
           <el-form-item label="SMTP 端口"><el-input-number v-model="channelForm.smtpPort" :min="0" /></el-form-item>
           <el-form-item label="用户名"><el-input v-model="channelForm.smtpUser" /></el-form-item>
-          <el-form-item label="密码"><el-input v-model="channelForm.smtpPassword" type="password" show-password /></el-form-item>
+          <el-form-item :label="editingChannel ? '修改邮箱密码' : '邮箱密码'">
+            <SecretField
+              v-model="channelForm.smtpPassword"
+              v-model:clear="channelForm.clearSmtpPassword"
+              :configured="!!editingChannel?.smtpPasswordConfigured"
+              :editing="!!editingChannel"
+              placeholder="留空表示保持原值，输入新值即修改"
+            />
+          </el-form-item>
           <el-form-item label="发件人"><el-input v-model="channelForm.from" /></el-form-item>
           <el-form-item label="收件人"><el-input v-model="channelForm.to" placeholder="多个用逗号分隔" /></el-form-item>
           <el-form-item label="使用 TLS"><el-switch v-model="channelForm.useTls" /></el-form-item>
@@ -118,6 +150,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { notifyApi } from '../api'
+import SecretField from '../components/SecretField.vue'
 import type { NotificationChannel, NotificationRule } from '../types'
 
 const tab = ref('channels')
@@ -129,7 +162,12 @@ const editingChannel = ref<NotificationChannel | null>(null)
 const editingRule = ref<NotificationRule | null>(null)
 const targetIds = ref<number[]>([])
 
-const channelForm = reactive<Partial<NotificationChannel> & { secret?: string; smtpPassword?: string }>({
+const channelForm = reactive<Partial<NotificationChannel> & {
+  secret?: string
+  clearSecret?: boolean
+  smtpPassword?: string
+  clearSmtpPassword?: boolean
+}>({
   type: 'webhook',
   enabled: true,
 })
@@ -150,16 +188,29 @@ function targetNames(ids: string) {
 
 function openChannel(row?: NotificationChannel) {
   editingChannel.value = row || null
-  Object.assign(channelForm, row ? { ...row, secret: '', smtpPassword: '' } : {
-    name: '', type: 'webhook', enabled: true, url: '', secret: '',
-    smtpHost: '', smtpPort: 465, smtpUser: '', smtpPassword: '', from: '', to: '', useTls: true,
+  Object.assign(channelForm, row ? {
+    name: row.name, type: row.type, enabled: row.enabled, url: row.url,
+    smtpHost: row.smtpHost, smtpPort: row.smtpPort, smtpUser: row.smtpUser,
+    from: row.from, to: row.to, useTls: row.useTls,
+    secret: '', clearSecret: false, smtpPassword: '', clearSmtpPassword: false,
+  } : {
+    name: '', type: 'webhook', enabled: true, url: '', secret: '', clearSecret: false,
+    smtpHost: '', smtpPort: 465, smtpUser: '', smtpPassword: '', clearSmtpPassword: false,
+    from: '', to: '', useTls: true,
   })
   channelVisible.value = true
 }
 
 async function saveChannel() {
-  if (editingChannel.value) await notifyApi.updateChannel(editingChannel.value.id, channelForm)
-  else await notifyApi.createChannel(channelForm)
+  const body = {
+    ...channelForm,
+    secret: channelForm.clearSecret ? '' : (channelForm.secret || ''),
+    clearSecret: !!channelForm.clearSecret,
+    smtpPassword: channelForm.clearSmtpPassword ? '' : (channelForm.smtpPassword || ''),
+    clearSmtpPassword: !!channelForm.clearSmtpPassword,
+  }
+  if (editingChannel.value) await notifyApi.updateChannel(editingChannel.value.id, body)
+  else await notifyApi.createChannel(body)
   ElMessage.success('已保存')
   channelVisible.value = false
   load()
