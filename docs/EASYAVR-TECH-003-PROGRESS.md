@@ -141,3 +141,15 @@
 - `openFallback` 不再通过字符串路径 `os.OpenRoot(r.dir)` 重新打开根目录；改为基于 `newSnapshotRoot()` 固定的 `r.fd`，用逐级 `unix.Openat(O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW)` 解析各中间目录，末级使用 `snapshotOpenFlags` 打开，全部中间 fd 及时关闭。
 - `splitFallbackPath` 做词法自保：拒绝绝对路径、空段、`.`/`..`、尾部斜杠；任何 errno 继续经 `snapshotOpenError` 区分 ENOENT / 逃逸 / 符号链接 / 权限，不统一当作文件不存在。
 - 新增测试钩子 `forceFallbackForTest`；测试覆盖降级端到端、父目录/末级符号链接、`../` 逃逸、目录/FIFO 非普通文件、根目录重命名后经固定 fd 访问、根目录并发 rename/replace 1000 轮竞态（不得读到根外哨兵内容）。
+
+---
+
+## 补充审查 TASK-017：PostgreSQL 演练脚本 DSN 主机安全门
+
+状态：**已完成并通过验证**（门禁测试；未做真实 PG 恢复）。
+
+- 文件：`deploy/scripts/verify-tech003-postgres.sh`（修改）、`deploy/scripts/verify-tech003-dsn-gate-test.sh`（新增）、`deploy/README.md`、`docs/testing/postgres-backup-restore-report.md`。
+- 新增 `dsn_gate()`：默认仅允许 `localhost` / `127.0.0.1` / `::1`（含 `[::1]`、`%5B%3A%3A1%5D`、`?host=%3A%3A1`、大小写与端口规范化）；非回环默认拒绝，日志只输出固定原因标签，不打印 DSN/口令。
+- 远程需显式 `PG_TEST_ALLOW_REMOTE=1` 且 `PG_TEST_REMOTE_HOST`、`PG_TEST_REMOTE_PORT`、`PG_TEST_MAINTENANCE_DB=postgres` 三项与 DSN 完全一致；库名检查保留，远程仅靠库名不得放行。文档明确：即便打开开关也只允许本人明确创建的隔离测试库，绝不指向生产。
+- 新增 `PG_TEST_DSN_CHECK_ONLY=1` 无连接门禁自检（不 psql/不建库/不建目录，退出 0 允许 / 1 拒绝 / 2 缺 DSN）；新增 11 用例门禁测试脚本，断言远程拒绝、三类回环通过、开关+确认通过、确认不匹配/缺失拒绝、业务库名拒绝、无 DSN SKIP、无秘密泄漏。
+- 结果：`bash -n deploy/scripts/*.sh` PASS；`bash deploy/scripts/verify-tech003-dsn-gate-test.sh` → `PASS=66 FAIL=0`；无 DSN SKIP exit 2。真实 PG 恢复演练按任务约束未执行。

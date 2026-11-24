@@ -3,12 +3,21 @@
 #
 # 安全约束：
 #   - 必须显式传 PG_TEST_DSN=<本地可写维护库 DSN> 才运行；未传打印 SKIP 并以非 0 退出。
+#   - 主机门禁：默认只接受回环主机 localhost / 127.0.0.1 / ::1（含 DSN 方括号与 URL 编码写法）。
+#     非回环主机默认在建库/连接前直接拒绝；只有显式 PG_TEST_ALLOW_REMOTE=1 且
+#     PG_TEST_REMOTE_HOST / PG_TEST_REMOTE_PORT / PG_TEST_MAINTENANCE_DB=postgres
+#     三项与 DSN 解析结果完全一致才放行。远程模式仍拒绝业务库/生产样式库名；
+#     即使放行也只允许本人明确创建的隔离测试库，绝不指向生产。
 #   - 维护库只允许 postgres；测试库只允许本脚本自建的 easyavr_pg003_<hex>_src/_dst。
 #     业务库 easyavr 与任何生产样式库名一律拒绝，脚本从不连接它们。
+#   - PG_TEST_DSN_CHECK_ONLY=1：只做解析+安全门自检，不连数据库、不建目录/库。
+#     退出码 0=允许 / 1=拒绝 / 2=缺 DSN；输出为脱敏结果（不含口令/完整 DSN/真实主机）。
 #   - 主密钥/管理员口令/测试凭据只在进程环境变量与 shell 变量中，不写文件、不写日志；
 #     日志只出现脱敏 DSN。退出时 trap 停进程、删临时目录、DROP 两个一次性库。
 #
 # 用法：PG_TEST_DSN='postgres://<user>:<pass>@127.0.0.1:5432/postgres?sslmode=disable' \
+#       bash deploy/scripts/verify-tech003-postgres.sh
+# 自检：PG_TEST_DSN_CHECK_ONLY=1 PG_TEST_DSN='postgres://...' \
 #       bash deploy/scripts/verify-tech003-postgres.sh
 # 退出码：0=全部 PASS（可含 SKIP），1=有 FAIL/清理告警，2=缺少 PG_TEST_DSN。
 
@@ -27,7 +36,13 @@ PIDS=()
 DBS_CREATED=()
 SRC_DB=''
 DST_DB=''
+SRC_DSN=''
+DST_DSN=''
 TMP=''
+M=()
+M_DB=''; M_USER=''; M_PASS=''; M_HOST=''; M_PORT=''
+REDACTED_DSN=''; CHECK_REDACTED_DSN=''
+GATE_OK=0; GATE_REASON=''
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 pass() { PASS=$((PASS + 1)); log "PASS  $*"; }
@@ -36,11 +51,126 @@ skip() { SKIP=$((SKIP + 1)); log "SKIP  $*"; }
 heading() { log ""; log "== $* =="; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# DSN 解析 + 安全门：只写全局变量，不连库、不建目录。
+# 输出字段（13 行）：db,user,password,host,port,redacted,check_redacted,src,dst,src_dsn,dst_dsn,gate_ok,reason
+dsn_gate() {
+  local meta
+  if ! meta=$(python3 - "$PG_TEST_DSN" <<'PY'
+import os, secrets, sys
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, unquote
+
+raw = sys.argv[1]
+p = urlsplit(raw)
+q = parse_qsl(p.query, keep_blank_values=True)
+d = dict(q)
+db = d.get('dbname') or p.path.lstrip('/') or ''
+user = d.get('user') or p.username or ''
+password = d.get('password') or p.password or ''
+
+def norm_host(value):
+    h = unquote(value or '').strip()
+    if h.startswith('[') and h.endswith(']'):
+        h = h[1:-1]
+    return h.lower()
+
+def norm_port(value):
+    s = unquote(str(value)).strip() if value not in (None, '') else ''
+    if not s:
+        return ''
+    try:
+        return str(int(s))
+    except ValueError:
+        return s.lower()
+
+host = norm_host(d.get('host') or p.hostname or '')
+try:
+    p_port = p.port
+except ValueError:
+    p_port = None
+port = norm_port(d.get('port') or p_port or '5432')
+
+# 沿用原有脱敏 DSN（只遮口令、保留主机），主流程日志继续用它。
+if '@' in p.netloc:
+    auth, hostpart = p.netloc.rsplit('@', 1)
+    auth_red = (auth.split(':', 1)[0] + ':***') if ':' in auth else '***'
+    rednet = auth_red + '@' + hostpart
+else:
+    rednet = p.netloc
+red = urlunsplit((p.scheme, rednet, p.path, p.query, p.fragment))
+
+# CHECK_ONLY 专用：在 red 基础上再遮主机与查询串口令，不打印真实主机地址。
+check_q = urlencode([(k, '***' if k in ('password', 'pass', 'pwd') else v) for k, v in q])
+check_red = urlunsplit((p.scheme, ('***@<host>' if '@' in p.netloc else '<host>'), p.path, check_q, p.fragment))
+
+suffix = secrets.token_hex(4)
+src, dst = 'easyavr_pg003_%s_src' % suffix, 'easyavr_pg003_%s_dst' % suffix
+def with_db(name):
+    if any(k == 'dbname' for k, _ in q):
+        nq = urlencode([(k, name if k == 'dbname' else v) for k, v in q])
+        path = p.path
+    else:
+        nq, path = p.query, '/' + name
+    return urlunsplit((p.scheme, p.netloc, path, nq, p.fragment))
+
+LOOPBACK = {'localhost', '127.0.0.1', '::1'}
+ok, reason = True, 'ok'
+if not user or not host:
+    ok, reason = False, 'missing-user-host'
+if db != 'postgres':
+    ok, reason = False, 'maintenance-db'
+if host not in LOOPBACK:
+    if os.environ.get('PG_TEST_ALLOW_REMOTE', '') != '1':
+        ok, reason = False, 'remote-not-allowed'
+    else:
+        rh = norm_host(os.environ.get('PG_TEST_REMOTE_HOST', ''))
+        rp = norm_port(os.environ.get('PG_TEST_REMOTE_PORT', ''))
+        rdb = (os.environ.get('PG_TEST_MAINTENANCE_DB', '') or '').strip()
+        if not rh or not rp or not rdb:
+            ok, reason = False, 'remote-confirm-missing'
+        elif rh != host or rp != port or rdb != db or rdb != 'postgres':
+            ok, reason = False, 'remote-confirm-mismatch'
+
+for line in (db, user, password, host, port, red, check_red, src, dst,
+             with_db(src), with_db(dst), '1' if ok else '0', reason):
+    print(line)
+PY
+  ); then
+    GATE_OK=0; GATE_REASON='parse-failed'; return 0
+  fi
+  mapfile -t M < <(printf '%s\n' "$meta")
+  if ((${#M[@]} != 13)); then
+    GATE_OK=0; GATE_REASON='parse-shape'; return 0
+  fi
+  M_DB=${M[0]}; M_USER=${M[1]}; M_PASS=${M[2]}; M_HOST=${M[3]}; M_PORT=${M[4]}
+  REDACTED_DSN=${M[5]}; CHECK_REDACTED_DSN=${M[6]}
+  SRC_DB=${M[7]}; DST_DB=${M[8]}; SRC_DSN=${M[9]}; DST_DSN=${M[10]}
+  GATE_OK=${M[11]}; GATE_REASON=${M[12]}
+}
+
 if [[ -z ${PG_TEST_DSN:-} ]]; then
   log "SKIP  PG_TEST_DSN 未设置；未连接任何数据库，未做任何改动。"
   log "       用法: PG_TEST_DSN='postgres://<可写维护账号>@127.0.0.1:5432/postgres?sslmode=disable' bash $0"
-  log "SUMMARY PASS=0 FAIL=0 SKIP=1 CLEANUP_WARN=0"
+  if [[ ${PG_TEST_DSN_CHECK_ONLY:-} == 1 ]]; then
+    log "CHECK-ONLY SUMMARY PASS=0 FAIL=0 SKIP=1 EXIT=2"
+  else
+    log "SUMMARY PASS=0 FAIL=0 SKIP=1 CLEANUP_WARN=0"
+  fi
   exit 2
+fi
+
+# 门禁自检：在 TMP/trap/前置检查之前退出，保证不连库、不建目录或库。
+if [[ ${PG_TEST_DSN_CHECK_ONLY:-} == 1 ]]; then
+  dsn_gate
+  if [[ $GATE_OK == 1 ]]; then
+    log "CHECK-ONLY 脱敏结果: $CHECK_REDACTED_DSN"
+    log "PASS  DSN 安全门允许（未连接数据库）"
+    log "CHECK-ONLY SUMMARY PASS=1 FAIL=0 EXIT=0"
+    exit 0
+  fi
+  log "CHECK-ONLY 脱敏结果: ${CHECK_REDACTED_DSN:-<unavailable>}"
+  log "FAIL  DSN 安全门拒绝: $GATE_REASON（未连接数据库）"
+  log "CHECK-ONLY SUMMARY PASS=0 FAIL=1 EXIT=1"
+  exit 1
 fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/verify-tech003-pg.XXXXXX") || { log "FAIL  无法创建临时目录"; exit 1; }
@@ -100,52 +230,11 @@ for f in pg_backup.sh pg_restore.sh; do
 done
 if ((FAIL > 0)); then exit 1; fi
 
-heading "DSN 安全门（拒绝业务库，打印脱敏 DSN）"
-if ! META=$(python3 - "$PG_TEST_DSN" <<'PY'
-import secrets, sys
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-raw = sys.argv[1]
-p = urlsplit(raw)
-q = parse_qsl(p.query, keep_blank_values=True)
-d = dict(q)
-db = d.get('dbname') or p.path.lstrip('/') or ''
-user = d.get('user') or p.username or ''
-password = d.get('password') or p.password or ''
-host = d.get('host') or p.hostname or ''
-port = d.get('port') or p.port or '5432'
-if '@' in p.netloc:
-    auth, hostpart = p.netloc.rsplit('@', 1)
-    auth_red = (auth.split(':', 1)[0] + ':***') if ':' in auth else '***'
-    rednet = auth_red + '@' + hostpart
-else:
-    rednet = p.netloc
-red = urlunsplit((p.scheme, rednet, p.path, p.query, p.fragment))
-suffix = secrets.token_hex(4)
-src, dst = 'easyavr_pg003_%s_src' % suffix, 'easyavr_pg003_%s_dst' % suffix
-def with_db(name):
-    if any(k == 'dbname' for k, _ in q):
-        nq = urlencode([(k, name if k == 'dbname' else v) for k, v in q])
-        path = p.path
-    else:
-        nq, path = p.query, '/' + name
-    return urlunsplit((p.scheme, p.netloc, path, nq, p.fragment))
-for line in (db, user, password, host, str(port), red, src, dst, with_db(src), with_db(dst)):
-    print(line)
-PY
-); then
-  fail "无法解析 PG_TEST_DSN（DSN 本身不记录）"
-  exit 1
-fi
-mapfile -t M < <(printf '%s\n' "$META")
-if ((${#M[@]} != 10)); then
-  fail "PG_TEST_DSN 解析结果异常"
-  exit 1
-fi
-M_DB=${M[0]}; M_USER=${M[1]}; M_PASS=${M[2]}; M_HOST=${M[3]}; M_PORT=${M[4]}
-REDACTED_DSN=${M[5]}; SRC_DB=${M[6]}; DST_DB=${M[7]}; SRC_DSN=${M[8]}; DST_DSN=${M[9]}
+heading "DSN 安全门（主机白名单/远程确认/拒绝业务库，打印脱敏 DSN）"
+dsn_gate
 log "PG_TEST_DSN (redacted) = $REDACTED_DSN"
-if [[ $M_DB == easyavr || $M_DB != postgres ]]; then
-  fail "维护库必须是 postgres；拒绝业务库/生产样式库名（实际库名不写入日志）"
+if [[ $GATE_OK != 1 ]]; then
+  fail "DSN 安全门拒绝: $GATE_REASON（连接数据库前退出；原因不含 DSN/口令/主机）"
   exit 1
 fi
 if [[ -z $M_USER || -z $M_HOST ]]; then
@@ -159,6 +248,11 @@ for db in "$SRC_DB" "$DST_DB"; do
   fi
 done
 pass "库名白名单通过（源/目标均为脚本自建的 easyavr_pg003_*）"
+if [[ $M_HOST != localhost && $M_HOST != 127.0.0.1 && $M_HOST != ::1 ]]; then
+  pass "远程模式已核验三项确认变量（主机地址不写入日志）"
+else
+  pass "主机门禁通过（回环主机）"
+fi
 if ! psql "$PG_TEST_DSN" -v ON_ERROR_STOP=1 -Atq -c 'SELECT 1' 2>/dev/null | grep -qx 1; then
   fail "维护库连接/只读探测失败"
   exit 1

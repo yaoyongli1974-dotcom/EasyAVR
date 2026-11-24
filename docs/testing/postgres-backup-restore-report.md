@@ -62,6 +62,33 @@ PG_TEST_DSN='postgres://<user>:<口令>@127.0.0.1:5432/postgres?sslmode=disable'
 - **大规模/并发写入场景**：只覆盖小数据量的静态备份恢复，未测 TB 级归档、并发写入中热备的性能与一致性窗口。
 - **真实主密钥保管**：本次 v1/v2 主密钥由 `openssl rand -base64 32` 在进程内生成并丢弃，未演练外部 KMS/密码管理器的取回流程（按设计也不应落盘）。
 
+## TASK-017：DSN 主机门禁与 CHECK_ONLY 自检（安全跟进）
+
+- 日期：2026-11-25
+- 分支：`feature/easyavr-tech-003-security-followup`
+- 范围：只改 `deploy/scripts/verify-tech003-postgres.sh`、新增 `deploy/scripts/verify-tech003-dsn-gate-test.sh` 与两份文档；**未改 `server/`、`web/`，未连数据库、未做真实备份恢复演练**。
+- 缺陷背景：原脚本只校验维护库名必须为 `postgres`，未限制 `PG_TEST_DSN` 的主机；误传远程 DSN 可能对非本地库执行 `pg_restore --clean --if-exists`。
+
+### 新增逻辑
+
+1. 主机门禁与库名检查在解析后、任何 psql 调用之前同时执行。默认只放行 `localhost` / `127.0.0.1` / `::1`；`[::1]` 方括号与 `%5B%3A%3A1%5D`、`?host=%3A%3A1` 等 URL 编码写法先解码、规范化后判定。非回环主机默认直接拒绝（原因标签 `remote-not-allowed`）。
+2. 远程放行要求 `PG_TEST_ALLOW_REMOTE=1` 且 `PG_TEST_REMOTE_HOST` / `PG_TEST_REMOTE_PORT` / `PG_TEST_MAINTENANCE_DB=postgres` 三项与解析后的 DSN 完全一致（主机解码/去括号/小写，端口数字规范化，缺省 5432）；缺失为 `remote-confirm-missing`，不一致为 `remote-confirm-mismatch`。远程模式仍拒绝业务库/生产样式库名；即使放行也只允许本人明确创建的隔离测试库，绝不指向生产。
+3. `PG_TEST_DSN_CHECK_ONLY=1` 在 `mktemp`/trap/前置检查之前退出，只解析+过门；输出脱敏结果（例：`postgres://***@<host>/postgres?sslmode=disable`），不含口令、完整 DSN、真实主机地址。退出码 0=允许 / 1=拒绝 / 2=缺 DSN。
+4. 主流程仍沿用原 `REDACTED_DSN` 日志与末尾的日志泄漏审计（`完整DSN|$PG_TEST_DSN` 等），新增日志不输出完整 DSN；CHECK_ONLY 另用进一步遮主机的脱敏串。
+
+### 执行的命令与结果（全部为门禁静态检查，无数据库连接）
+
+| 命令 | 退出码 | 结果 |
+|---|---:|---|
+| `bash -n deploy/scripts/*.sh` | 0 | 全部脚本语法通过 |
+| `bash deploy/scripts/verify-tech003-dsn-gate-test.sh` | 0 | `SUMMARY PASS=66 FAIL=0`（11 个用例 × 6 项断言） |
+| `env -u PG_TEST_DSN PG_TEST_DSN_CHECK_ONLY=1 bash deploy/scripts/verify-tech003-postgres.sh` | 2 | SKIP；未连接数据库 |
+| `env -u PG_TEST_DSN bash deploy/scripts/verify-tech003-postgres.sh` | 2 | 主流程未传 DSN 仍 SKIP，行为不变 |
+
+自检覆盖：远程地址拒绝（无开关）、localhost / 127.0.0.1 / `[::1]` / URL 编码 `::1` 放行、远程显式开关+三项确认放行、确认变量不匹配拒绝、确认变量缺失拒绝、业务库 `easyavr` 与生产样式 `easyavr_prod` 拒绝、无 DSN SKIP。每个用例均断言退出码、输出无口令/完整 DSN/真实主机地址、明确声明未连接数据库、且 `TMPDIR` 下无新建目录或库。实测各用例原因标签分别为 `remote-not-allowed`、`ok`、`remote-confirm-mismatch`、`remote-confirm-missing`、`maintenance-db`。
+
 ## 结论
 
 `deploy/scripts/verify-tech003-postgres.sh` 已完成一次真实隔离演练：第二次运行 70 项 PASS、0 FAIL、0 SKIP、0 清理告警，退出码 0；安全门、加密落库、备份校验、dry-run 零写入、真实恢复、结构/数据/关联/索引/约束校验、v1 解密、错误密钥 fail-closed 与 v1→v2 轮换全部实测通过。剩余项均在上面的“SKIP / 待验证”中明确列出。
+
+TASK-017 安全跟进另以 CHECK_ONLY 静态自检验证：`bash -n deploy/scripts/*.sh` 通过，门禁自检 `PASS=66 FAIL=0`，未传 `PG_TEST_DSN` 仍 SKIP/exit 2；未连接任何数据库、未修改备份恢复主流程。

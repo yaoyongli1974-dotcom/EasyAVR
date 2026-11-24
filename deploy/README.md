@@ -15,7 +15,8 @@
 | `deploy/scripts/backup.sh` | SQLite 一致性备份 → `db/`，非敏感配置白名单备份 → `config/`（各保留 7 份），发布前做 gzip + `PRAGMA integrity_check` 验证；**不打包整个 env**，不含任何密钥/口令。 |
 | `deploy/scripts/restore.sh` | SQLite 备份恢复：默认 dry-run，`--yes` 才执行；先留安全副本，再原子替换；不生成/轮换任何密钥。 |
 | `deploy/scripts/pg_backup.sh` / `pg_restore.sh` | PostgreSQL `pg_dump -Fc` → `pg/` 与 `pg_restore -j4 --clean --if-exists` 恢复（默认 dry-run）；不生成密钥。 |
-| `deploy/scripts/verify-tech003-postgres.sh` | TASK-013 隔离演练：显式 `PG_TEST_DSN` 才运行，自建/自删 `easyavr_pg003_*` 一次性库，真实跑备份→dry-run→恢复→校验→密钥轮换与错误密钥 fail-closed；不碰业务库，密钥只在进程内。 |
+| `deploy/scripts/verify-tech003-postgres.sh` | TASK-013 隔离演练：显式 `PG_TEST_DSN` 才运行，DSN 安全门默认只放行回环主机（远程需显式开关+三项确认），自建/自删 `easyavr_pg003_*` 一次性库，真实跑备份→dry-run→恢复→校验→密钥轮换与错误密钥 fail-closed；不碰业务库，密钥只在进程内。支持 `PG_TEST_DSN_CHECK_ONLY=1` 仅做门禁自检。 |
+| `deploy/scripts/verify-tech003-dsn-gate-test.sh` | TASK-017 门禁自检脚本：用 CHECK_ONLY 模式覆盖远程拒绝/回环放行/远程显式确认/确认不匹配/业务库名拒绝/无 DSN SKIP，断言退出码与无秘密泄漏；不连接数据库。 |
 | `deploy/scripts/healthcheck.sh` | 单元/端点存活探测，连续失败 3 次重启服务。 |
 | `deploy/cron.d/easyavr` | `/etc/cron.d` 片段，驱动备份/恢复相关脚本与健康检查（密钥流程不在 cron 里）。 |
 | `deploy/logrotate/easyavr` | 切割两个 cron 日志（weekly / 4 份 / 压缩）。 |
@@ -432,6 +433,40 @@ PG_TEST_DSN='postgres://<可写维护账号>:<口令>@127.0.0.1:5432/postgres?ss
 ```
 
 演练内容：用 EasyAVR 自身（生产模式 + PG 驱动）AutoMigrate 建表并经 API/GORM hook 写入设备密码、AIProvider APIKey 等敏感数据，再跑 `pg_backup.sh`（非空/PGDMP 魔数/`pg_restore -l`/权限 0600）、`pg_restore.sh` dry-run（确认零写入）与 `--yes`，对比表结构/索引/约束/行数/关联与密文前缀，最后验证 v1 解密往返、错误密钥 fail-closed、v1→v2 轮换重加密。真实执行结果见 `docs/testing/postgres-backup-restore-report.md`。
+
+#### DSN 安全门：主机白名单与远程显式确认（TASK-017）
+
+演练脚本会在**建库、连接数据库之前**解析 `PG_TEST_DSN` 并执行安全门，维护库名检查和主机门禁同时生效；拒绝时直接退出，日志只打固定原因标签（如 `remote-not-allowed` / `maintenance-db`），不输出 DSN、口令或真实主机地址。
+
+- **默认仅回环**：主机必须是 `localhost`、`127.0.0.1`、`::1`。DSN 中的 `[::1]` 方括号写法、`%5B%3A%3A1%5D` 或 `?host=%3A%3A1` 等 URL 编码写法、大小写差异都会先解码/规范化再判定；其余主机一律拒绝。
+- **远程需显式开关 + 三项核对**：非回环主机必须同时满足 `PG_TEST_ALLOW_REMOTE=1`，且 `PG_TEST_REMOTE_HOST`、`PG_TEST_REMOTE_PORT`、`PG_TEST_MAINTENANCE_DB=postgres` 三个环境变量与 DSN 解析结果完全一致。主机做解码/去方括号/小写规范化，端口按数字规范化（缺省 5432），库名必须与维护库一致且为 `postgres`；任一变量缺失或不一致即拒绝，不连接数据库。
+- **库名不单独作为安全依据**：远程模式下维护库仍必须是 `postgres`，`easyavr`、`easyavr_prod` 等业务库/生产样式库名一律拒绝。
+- **硬性警告**：即使开关打开、三项核对通过，也**只允许连接本人明确创建的隔离测试库**用于演练，绝不能指向生产库或任何承载业务数据的库。脚本会自建并自删 `easyavr_pg003_<hex>_src/_dst`；安全门只防误传，不替代人工确认。
+
+```bash
+# 远程（仅本人隔离测试实例）示例：四项缺一不可
+PG_TEST_ALLOW_REMOTE=1 \
+PG_TEST_REMOTE_HOST='db.example.internal' \
+PG_TEST_REMOTE_PORT='5432' \
+PG_TEST_MAINTENANCE_DB='postgres' \
+PG_TEST_DSN='postgres://<user>:<pass>@db.example.internal:5432/postgres?sslmode=disable' \
+  bash deploy/scripts/verify-tech003-postgres.sh
+```
+
+#### 无连接门禁自检（CHECK_ONLY）
+
+只做解析 + 安全门检查，**不执行 psql、不连接数据库、不创建目录或库**；打印 PASS/FAIL 摘要与脱敏结果（口令、完整 DSN、真实主机地址均不出现）。退出码：`0`=允许，`1`=拒绝，`2`=缺少 `PG_TEST_DSN`。
+
+```bash
+PG_TEST_DSN_CHECK_ONLY=1 \
+PG_TEST_DSN='postgres://<user>:<pass>@127.0.0.1:5432/postgres?sslmode=disable' \
+  bash deploy/scripts/verify-tech003-postgres.sh
+
+# 一键跑门禁自检用例（远程拒绝/回环放行/远程确认/不匹配/业务库名/无 DSN）
+bash deploy/scripts/verify-tech003-dsn-gate-test.sh
+```
+
+自检脚本输出每项 PASS/FAIL 与 `SUMMARY PASS=<n> FAIL=0`，FAIL 非零退出；本机实测 `PASS=66 FAIL=0`。演练脚本末尾的日志脱敏审计（`完整DSN|$PG_TEST_DSN` 等）保持原样，新增日志不含完整 DSN。
 
 ### 三层备份与主密钥独立流程（EASYAVR-TECH-002 / TASK-002）
 
