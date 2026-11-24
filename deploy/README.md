@@ -112,7 +112,7 @@ go run ./cmd/auditscrub -driver postgres -dsn "$EASYAVR_DB_DSN" \
 ### 凭据加密与生产安全启动（TASK-002 / TASK-003）
 
 - 数据库里的设备密码、AI Provider API Key、对象存储 AccessKey/SecretKey、通知渠道 Secret/SMTP 密码、级联密码由 GORM 钩子透明加解密（AES-256-GCM，随机 nonce，密文带 `enc:<kid>:` 前缀）；`User.PasswordHash`、`APIKey.KeyHash` 本来就是哈希，不在加密范围。
-- 主密钥由 `EASYAVR_CREDENTIAL_KEY` 提供（`openssl rand -base64 32` 生成），**不得写入数据库或与数据库备份一起存放**。启动时会把旧明文行加密、把旧 kid 的密文用当前密钥重加密；遇到未知 kid 或无法解密的数据会直接报错停止，不退回明文。轮换步骤见 `deploy/env.example` 顶部注释。
+- 主密钥由 `EASYAVR_CREDENTIAL_KEY` 提供（`openssl rand -base64 32` 生成），**不得写入数据库或与数据库备份一起存放**。生产环境（`EASYAVR_ENV=production`）只接受 32 字节随机密钥的 Base64/Hex 形式，拒绝弱口令与低熵模式；旧口令派生密钥只能放在 `EASYAVR_CREDENTIAL_KEY_PREVIOUS` 中用于解密历史密文，不能作为当前主密钥。启动时会把旧明文行加密、把旧 kid 的密文用当前密钥重加密；遇到未知 kid 或无法解密的数据会直接报错停止，不退回明文。轮换步骤见 `deploy/env.example` 顶部注释。
 - `EASYAVR_ENV=production` 会在服务启动前检查：JWT 密钥/管理员密码/集群密钥/GB 口令不是公开默认值且长度足够、凭据主密钥已配置、CORS 无通配符、GB/GB35114 启用参数完整、证书/快照/数据库目录可写。错误信息只列变量名，不输出密钥值。开发环境（默认）保留原有便利默认值。
 
 ### PostgreSQL 迁移验证（TASK-001 遗留项）

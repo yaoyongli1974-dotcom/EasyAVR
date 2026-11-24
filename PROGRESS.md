@@ -707,3 +707,9 @@
 - **验证**：`gofmt -l internal/ai/` 干净；`cd server && go test ./...`、`go vet ./...`、`go test -race ./internal/ai` 全绿。
 - **当前状态**：完成（已提交 `09ed20c`）
 - **下一步**：第四批 TASK-006 生产密钥强度；第五批 TASK-007/008；第六批 TASK-009/010 与最终报告。
+
+### 2026-11-24（EASYAVR-TECH-002 第四批：TASK-006 生产密钥强度）
+- **已完成**：`security.ParseStrictKey` 仅接受 base64/hex 32 字节随机密钥，拒绝弱口令、短串与低熵模式；`NewStrict` 生产主密钥走严格解析，历史密钥仍用宽松解析仅作解密/轮换；`Config.Validate()` 生产模式改用严格校验，启动入口生产路径改用 `NewStrict`；deploy/env.example 与 deploy/README.md 标明 `openssl rand -base64 32` 与轮换约束。新增配置用例：生产拒绝弱口令密钥、开发环境兼容口令、错误信息不泄露值。
+- **验证**：`cd server && gofmt -l` 干净、`go test ./...` 全绿、`go vet ./...` 零输出；`cd web && npm run build` 通过。
+- **当前状态**：完成
+- **下一步**：第五批 TASK-007 快照符号链接逃逸测试 + TASK-008 AI Runner 生命周期。

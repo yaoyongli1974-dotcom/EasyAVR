@@ -19,7 +19,11 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("configuration: %v", err)
 	}
-	enc, err := security.New(cfg.CredentialKey, cfg.CredentialKeyID, cfg.CredentialKeyPrevious)
+	newEncryptor := security.New
+	if cfg.IsProduction() {
+		newEncryptor = security.NewStrict
+	}
+	enc, err := newEncryptor(cfg.CredentialKey, cfg.CredentialKeyID, cfg.CredentialKeyPrevious)
 	if cfg.CredentialKey != "" {
 		if err != nil {
 			log.Fatalf("credential encryption key: %v", err)

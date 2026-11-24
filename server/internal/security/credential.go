@@ -30,7 +30,11 @@ type Encryptor struct {
 	keys map[string][32]byte
 }
 
-// ParseKey accepts base64, hex, or a raw passphrase (SHA-256 derived).
+// ParseKey is the legacy, lenient parser: it accepts base64, hex, or any raw
+// string (SHA-256 derived). It exists for development and for decrypting rows
+// written with historical passphrase-derived keys. Production master keys must
+// be 32 cryptographically random bytes supplied via ParseStrictKey / NewStrict;
+// do not use this function to introduce new production keys.
 func ParseKey(s string) ([32]byte, error) {
 	var key [32]byte
 	s = strings.TrimSpace(s)
@@ -48,12 +52,90 @@ func ParseKey(s string) ([32]byte, error) {
 	return sha256.Sum256([]byte(s)), nil
 }
 
-// New builds an encryptor. previous entries use the "<kid>:<key>" form.
+// ParseStrictKey parses a production master key. Only base64.StdEncoding or
+// hex encoding of exactly 32 bytes is accepted, and low-entropy byte patterns
+// (all zero, repeated bytes, short cycles, sequential bytes) are rejected.
+// There is deliberately no passphrase fallback: the key must be generated with
+// a CSPRNG. Error messages never include the supplied value.
+func ParseStrictKey(s string) ([32]byte, error) {
+	var key [32]byte
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return key, errors.New("empty encryption key")
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == 32 {
+		copy(key[:], b)
+		if lowEntropyKey(key) {
+			return [32]byte{}, errLowEntropyKey
+		}
+		return key, nil
+	}
+	if b, err := hex.DecodeString(s); err == nil && len(b) == 32 {
+		copy(key[:], b)
+		if lowEntropyKey(key) {
+			return [32]byte{}, errLowEntropyKey
+		}
+		return key, nil
+	}
+	return [32]byte{}, errors.New("encryption key must be base64 or hex encoded 32 random bytes")
+}
+
+var errLowEntropyKey = errors.New("encryption key has a low-entropy pattern; use 32 cryptographically random bytes")
+
+// lowEntropyKey rejects patterns that no CSPRNG-generated key would produce.
+func lowEntropyKey(key [32]byte) bool {
+	for period := 1; period <= 8; period++ {
+		repeats := true
+		for i := period; i < len(key); i++ {
+			if key[i] != key[i%period] {
+				repeats = false
+				break
+			}
+		}
+		if repeats {
+			return true
+		}
+	}
+	ascending, descending := true, true
+	seen := make(map[byte]struct{}, len(key))
+	for i, b := range key {
+		seen[b] = struct{}{}
+		if i > 0 {
+			if b != key[i-1]+1 {
+				ascending = false
+			}
+			if b != key[i-1]-1 {
+				descending = false
+			}
+		}
+	}
+	return ascending || descending || len(seen) < 8
+}
+
+// New builds an encryptor using the legacy, lenient key parser. It is for
+// development and migration only; production callers should use NewStrict.
+// previous entries use the "<kid>:<key>" form.
 func New(primaryKey, kid string, previous []string) (*Encryptor, error) {
 	key, err := ParseKey(primaryKey)
 	if err != nil {
 		return nil, err
 	}
+	return newEncryptor(key, kid, previous)
+}
+
+// NewStrict builds an encryptor for production: the primary key must be a
+// random 32-byte key (base64 or hex) as parsed by ParseStrictKey. previous
+// entries still use ParseKey so historical passphrase-derived keys can decrypt
+// old rows during rotation; they are never used for new encryption.
+func NewStrict(primaryKey, kid string, previous []string) (*Encryptor, error) {
+	key, err := ParseStrictKey(primaryKey)
+	if err != nil {
+		return nil, err
+	}
+	return newEncryptor(key, kid, previous)
+}
+
+func newEncryptor(key [32]byte, kid string, previous []string) (*Encryptor, error) {
 	if strings.TrimSpace(kid) == "" {
 		kid = "v1"
 	}

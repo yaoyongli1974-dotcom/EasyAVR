@@ -257,8 +257,8 @@ func (c *Config) Validate() error {
 	if c.AdminPass == "easyavr" || len(c.AdminPass) < 8 {
 		problems = append(problems, "EASYAVR_ADMIN_PASS is a default or too short")
 	}
-	if _, err := security.ParseKey(c.CredentialKey); err != nil {
-		problems = append(problems, "EASYAVR_CREDENTIAL_KEY is missing or invalid")
+	if _, err := security.ParseStrictKey(c.CredentialKey); err != nil {
+		problems = append(problems, "EASYAVR_CREDENTIAL_KEY is missing, weak or not a 32-byte random key")
 	}
 	if strings.Contains(c.AllowOrigin, "*") {
 		problems = append(problems, "EASYAVR_ALLOW_ORIGIN must not contain a wildcard in production")
