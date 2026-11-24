@@ -94,6 +94,7 @@ func migrate(db *gorm.DB) error {
 		&model.VideoResource{},
 		&model.AIProvider{},
 		&model.AITask{},
+		&model.AITaskRun{},
 		&model.AIModel{},
 		&model.AIModelVersion{},
 		&model.AIModelDeployment{},

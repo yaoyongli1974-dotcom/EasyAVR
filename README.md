@@ -78,6 +78,11 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 | `EASYAVR_ADMIN_USER/PASS` | `easyavr` / `easyavr` | 首次启动创建的管理员（生产必须修改） |
 | `EASYAVR_ZLM_API` | `http://127.0.0.1:80` | ZLMediaKit HTTP API |
 | `EASYAVR_ZLM_SECRET` | `EasyAVRzlmSecret2024x` | ZLM API secret（`docker-compose.yml` 已通过 `deploy/zlm/config.ini` 固定为同值） |
+| `EASYAVR_AI_MAX_CONCURRENCY` | `4` | AI 任务全局并发上限；满额时新运行记录进入 pending 排队 |
+| `EASYAVR_AI_PER_CHANNEL_LIMIT` | `1` | 单通道同时运行的 AI 任务上限 |
+| `EASYAVR_AI_TASK_TIMEOUT_SEC` | `120` | 单次任务执行超时（秒），超时后取消 context 并落库错误 |
+| `EASYAVR_AI_MAX_RETRIES` | `2` | 失败最大重试次数（仅 provider/流/抽帧类错误且未产生事件时） |
+| `EASYAVR_AI_BACKOFF_BASE_MS` | `2000` | 退避基数（毫秒），指数退避封顶 60s |
 | `EASYAVR_MEDIA_HOST` | `127.0.0.1` | 浏览器可访问的媒体主机 |
 | `EASYAVR_MEDIA_SCHEME` | `http` | 播放地址协议；页面走 HTTPS 时设为 `https`，并让 nginx 把 `/live`、`/record`、`/index/api/webrtc` 反代到 ZLM |
 | `EASYAVR_WEB_DIST` | `../web/dist` | 静态前端目录 |
@@ -145,7 +150,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 - **流量与状态**：通道累计流量统计、设备 TCP 健康检测、设备/通道上线/离线状态记录。
 - **录像增强**：列表/时间轴视图、0.5–16 倍速回放、紧急标记、按计划保存天数清理过期目录项；保留期清理会真实删除 ZLM 媒体文件（`/recordings/cleanup?files=1`），`files=0` 只清目录。
 - **转码 / OSD 水印**：平台侧 ffmpeg 从本机 RTSP 回环拉源流转码（H.264 + 码率/分辨率）并叠加中英文水印（OSD），输出派生流 `live/<streamKey>_t` 回推 ZLM，播放/录像/检索均可用派生流。见「转码与水印」页；任务崩溃自动置 failed 并停用。
-- **AI 分析计划**：任务支持 ROI 区域、分析灵敏度与分析计划（每天/工作日/双休日 + 时段）。
+- **AI 分析计划**：任务支持 ROI 区域、分析灵敏度与分析计划（每天/工作日/双休日 + 时段）。配置 JSON 中 `autoRecover:true` 的任务会在服务重启后自动恢复；每次执行生成独立运行记录（状态/心跳/重试/错误分类），可从任务页「运行历史」抽屉查看并手动恢复。
 - **全局功能搜索**：顶栏「功能搜索 (Ctrl+K)」按名称/关键词快速跳转功能模块。
 - **平台配置**：管理页「平台配置」可运行时启停 GB28181/EHOME/GB35114 信令、配置 GB35114 安全 SIP 监听端口，并查看播放鉴权/运维参数，无需改环境变量重启；环境变量仍作为首次启动默认值。
 - **集群**：节点心跳 + 设备级最少负载调度（`/cluster/stats` 展示各节点设备数）。

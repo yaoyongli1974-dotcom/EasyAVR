@@ -277,6 +277,9 @@ func (a *App) buildRouter() *gin.Engine {
 	tasks.POST("/:id/stop", a.stopTask)
 	tasks.POST("/:id/run", a.runTaskOnce)
 	tasks.GET("/:id/schedule", a.taskSchedule)
+	tasks.GET("/:id/runs", a.listTaskRuns)
+	tasks.GET("/:id/runs/:runId", a.getTaskRun)
+	tasks.POST("/:id/recover", a.recoverTask)
 
 	aiGroup.POST("/search", a.requirePolicy("ai:search", "*", nil), a.semanticSearch)
 

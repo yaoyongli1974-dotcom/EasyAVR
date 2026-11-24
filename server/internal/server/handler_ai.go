@@ -321,6 +321,79 @@ func (a *App) runTaskOnce(c *gin.Context) {
 	ok(c, gin.H{"events": events, "count": len(events)})
 }
 
+// ---- AI task runs ----
+
+// listTaskRuns returns the execution history of a task, newest first.
+func (a *App) listTaskRuns(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var task model.AITask
+	if err := a.db.First(&task, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	page, pageSize := pagination(c)
+	tx := a.db.Model(&model.AITaskRun{}).Where("task_id = ?", id)
+	if status := c.Query("status"); status != "" {
+		tx = tx.Where("status = ?", status)
+	}
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var runs []model.AITaskRun
+	if err := tx.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&runs).Error; err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(c, gin.H{"items": runs, "total": total, "page": page, "pageSize": pageSize})
+}
+
+// getTaskRun returns one run, scoped to its task.
+func (a *App) getTaskRun(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	runID, valid := parseUintParam(c, "runId")
+	if !valid {
+		return
+	}
+	var run model.AITaskRun
+	if err := a.db.Where("id = ? AND task_id = ?", runID, id).First(&run).Error; err != nil {
+		fail(c, http.StatusNotFound, "run not found")
+		return
+	}
+	ok(c, run)
+}
+
+// recoverTask reconciles a single task after a restart: lingering runs are
+// closed out, and the task is restarted only when autoRecover=true.
+func (a *App) recoverTask(c *gin.Context) {
+	id, valid := parseUintParam(c, "id")
+	if !valid {
+		return
+	}
+	var task model.AITask
+	if err := a.db.First(&task, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := a.runner.RecoverTask(id); err != nil {
+		fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var cfg struct {
+		AutoRecover bool `json:"autoRecover"`
+	}
+	_ = json.Unmarshal([]byte(task.Config), &cfg)
+	a.db.First(&task, id)
+	ok(c, gin.H{"id": id, "status": task.Status, "autoRecover": cfg.AutoRecover})
+}
+
 // ---- AI event center ----
 
 func (a *App) listEvents(c *gin.Context) {

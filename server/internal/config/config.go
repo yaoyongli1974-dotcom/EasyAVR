@@ -34,6 +34,7 @@ type Config struct {
 	AllowOrigin           string
 	SnapshotDir           string
 	MonitorSec            int
+	AI                    AIConfig
 	GB                    GBConfig
 	Cluster               ClusterConfig
 	GA1400                GA1400Config
@@ -95,6 +96,15 @@ type ClusterConfig struct {
 	HeartbeatSec int
 }
 
+// AIConfig bounds AI task execution so a busy provider cannot exhaust the host.
+type AIConfig struct {
+	MaxConcurrency  int // global parallel task executions
+	PerChannelLimit int // parallel executions per channel
+	TaskTimeoutSec  int // hard timeout for one attempt
+	MaxRetries      int // retries for transient provider/stream/frame errors
+	BackoffBaseMs   int // exponential backoff base in milliseconds
+}
+
 // GBConfig configures the GB28181 SIP signaling server.
 type GBConfig struct {
 	Enabled     bool
@@ -137,6 +147,13 @@ func Load() *Config {
 		AllowOrigin:           env("EASYAVR_ALLOW_ORIGIN", "*"),
 		SnapshotDir:           env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
 		MonitorSec:            envInt("EASYAVR_MONITOR_SEC", 0),
+		AI: AIConfig{
+			MaxConcurrency:  envInt("EASYAVR_AI_MAX_CONCURRENCY", 4),
+			PerChannelLimit: envInt("EASYAVR_AI_PER_CHANNEL_LIMIT", 1),
+			TaskTimeoutSec:  envInt("EASYAVR_AI_TASK_TIMEOUT_SEC", 120),
+			MaxRetries:      envInt("EASYAVR_AI_MAX_RETRIES", 2),
+			BackoffBaseMs:   envInt("EASYAVR_AI_BACKOFF_BASE_MS", 2000),
+		},
 		GB: GBConfig{
 			Enabled:     envBool("EASYAVR_GB_ENABLED", false),
 			Listen:      env("EASYAVR_GB_LISTEN", ":5060"),
@@ -255,6 +272,21 @@ func (c *Config) Validate() error {
 		}
 	default:
 		problems = append(problems, "EASYAVR_DB_DRIVER is unsupported")
+	}
+	if c.AI.MaxConcurrency < 1 {
+		problems = append(problems, "EASYAVR_AI_MAX_CONCURRENCY must be at least 1")
+	}
+	if c.AI.PerChannelLimit < 1 {
+		problems = append(problems, "EASYAVR_AI_PER_CHANNEL_LIMIT must be at least 1")
+	}
+	if c.AI.TaskTimeoutSec < 1 {
+		problems = append(problems, "EASYAVR_AI_TASK_TIMEOUT_SEC must be at least 1")
+	}
+	if c.AI.MaxRetries < 0 {
+		problems = append(problems, "EASYAVR_AI_MAX_RETRIES must not be negative")
+	}
+	if c.AI.BackoffBaseMs < 0 {
+		problems = append(problems, "EASYAVR_AI_BACKOFF_BASE_MS must not be negative")
 	}
 	if err := checkWritableDir(c.SnapshotDir); err != nil {
 		problems = append(problems, "EASYAVR_SNAPSHOT_DIR is not a writable directory")

@@ -139,6 +139,24 @@ export interface AITask {
   schedule: string
   enabled: boolean
   status: string
+  lastRunAt?: string | null
+  errorCode?: string | null
+  errorMsg?: string | null
+  retryCount?: number | null
+}
+
+export interface AITaskRun {
+  id: number
+  taskId: number
+  status: string
+  startedAt: string | null
+  finishedAt: string | null
+  lastRunAt: string | null
+  retryCount: number
+  errorCode: string | null
+  errorMsg: string | null
+  workerId: string | null
+  heartbeatAt: string | null
 }
 
 export interface AITaskSchedule {

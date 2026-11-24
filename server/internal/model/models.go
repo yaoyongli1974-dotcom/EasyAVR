@@ -120,16 +120,18 @@ type AIProvider struct {
 // TaskType: cv_detect, vlm_understand, llm_analyze, vqd (video quality diagnosis).
 type AITask struct {
 	Base
-	Name        string `gorm:"size:128" json:"name"`
-	ChannelID   uint   `gorm:"index" json:"channelId"`
-	ProviderID  uint   `gorm:"index" json:"providerId"`
-	TaskType    string `gorm:"size:32;index" json:"taskType"`
-	Config      string `gorm:"type:text" json:"config"` // JSON: roi, interval, labels, prompt
-	ROI         string `gorm:"type:text" json:"roi"`    // JSON array of normalized polygon points
-	Sensitivity int    `gorm:"default:50" json:"sensitivity"`
-	Schedule    string `gorm:"type:text" json:"schedule"` // JSON: {days, start, end}
-	Enabled     bool   `gorm:"default:true" json:"enabled"`
-	Status      string `gorm:"size:16;default:stopped" json:"status"`
+	Name          string `gorm:"size:128" json:"name"`
+	ChannelID     uint   `gorm:"index" json:"channelId"`
+	ProviderID    uint   `gorm:"index" json:"providerId"`
+	TaskType      string `gorm:"size:32;index" json:"taskType"`
+	Config        string `gorm:"type:text" json:"config"` // JSON: roi, interval, labels, prompt
+	ROI           string `gorm:"type:text" json:"roi"`    // JSON array of normalized polygon points
+	Sensitivity   int    `gorm:"default:50" json:"sensitivity"`
+	Schedule      string `gorm:"type:text" json:"schedule"` // JSON: {days, start, end}
+	Enabled       bool   `gorm:"default:true" json:"enabled"`
+	Status        string `gorm:"size:16;default:stopped" json:"status"`
+	LastErrorCode string `gorm:"size:32" json:"lastErrorCode"`
+	LastErrorMsg  string `gorm:"size:512" json:"lastErrorMsg"`
 }
 
 // AIModel is a registry entry for an AI model, stable across versions.

@@ -3,6 +3,10 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/easyavr/easyavr/internal/config"
 	"github.com/easyavr/easyavr/internal/security"
@@ -39,6 +43,15 @@ func main() {
 	}
 
 	app := server.New(cfg, db)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-stop
+		log.Printf("[easyavr] shutting down")
+		app.Close()
+		time.Sleep(200 * time.Millisecond)
+		os.Exit(0)
+	}()
 	if err := app.Run(); err != nil {
 		log.Fatalf("server exited: %v", err)
 	}

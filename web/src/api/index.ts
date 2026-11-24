@@ -6,6 +6,7 @@ import type {
   AIModelVersion,
   AIProvider,
   AITask,
+  AITaskRun,
   AITaskSchedule,
   AlertDelivery,
   AlertPolicy,
@@ -205,6 +206,11 @@ export const aiApi = {
   stopTask: (id: number) => unwrap<{ id: number }>(client.post(`/ai/tasks/${id}/stop`)),
   runTask: (id: number) => unwrap<{ events: AIEvent[]; count: number }>(client.post(`/ai/tasks/${id}/run`)),
   taskSchedule: (id: number) => unwrap<AITaskSchedule>(client.get(`/ai/tasks/${id}/schedule`)),
+  taskRuns: (id: number, params?: Record<string, unknown>) =>
+    unwrap<Page<AITaskRun>>(client.get(`/ai/tasks/${id}/runs`, { params })),
+  taskRun: (id: number, runId: number) => unwrap<AITaskRun>(client.get(`/ai/tasks/${id}/runs/${runId}`)),
+  recoverTask: (id: number) =>
+    unwrap<{ recovered: boolean; status: string }>(client.post(`/ai/tasks/${id}/recover`)),
 }
 
 export const modelApi = {

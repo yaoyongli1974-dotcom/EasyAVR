@@ -88,7 +88,13 @@ func New(cfg *config.Config, db *gorm.DB) *App {
 		jwt:     auth.NewManager(cfg.JWTSecret, cfg.JWTExpireH),
 		zlm:     zlm,
 		devices: device.NewService(db, zlm),
-		runner:  ai.NewRunner(db, zlm),
+		runner: ai.NewRunnerWithOptions(db, zlm, ai.RunnerOptions{
+			MaxConcurrency:  cfg.AI.MaxConcurrency,
+			PerChannelLimit: cfg.AI.PerChannelLimit,
+			TaskTimeout:     time.Duration(cfg.AI.TaskTimeoutSec) * time.Second,
+			MaxRetries:      cfg.AI.MaxRetries,
+			BackoffBase:     time.Duration(cfg.AI.BackoffBaseMs) * time.Millisecond,
+		}),
 		events:  event.NewService(db),
 		rec:     recording.NewService(db, zlm),
 		snaps:   snapshot.NewService(db, zlm, cfg.SnapshotDir),
@@ -150,6 +156,9 @@ func (a *App) Engine() *gin.Engine { return a.engine }
 // Run starts background schedulers and the HTTP server.
 func (a *App) Run() error {
 	ctx := context.Background()
+	// Repair orphaned AI task runs from a previous process before any new
+	// scheduling starts. Failures are logged by the runner and never abort boot.
+	go a.runner.Recover()
 	a.rec.StartScheduler(ctx, time.Minute)
 	a.snaps.StartScheduler(ctx, 30*time.Second)
 	a.notify.StartEscalation(ctx, time.Minute)
@@ -186,6 +195,13 @@ func (a *App) Run() error {
 	}
 	log.Printf("[easyavr] listening on %s", a.cfg.Listen)
 	return a.engine.Run(a.cfg.Listen)
+}
+
+// Close cancels background AI tasks and releases their execution slots.
+func (a *App) Close() {
+	if a.runner != nil {
+		a.runner.Close()
+	}
 }
 
 // startSecureSIP launches the GB35114 GM/T 0024 secure SIP listener using the

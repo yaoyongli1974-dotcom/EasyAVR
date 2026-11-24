@@ -22,9 +22,30 @@
           <el-tag :type="row.status === 'running' ? 'success' : 'info'">{{ row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="300">
+      <el-table-column label="最近运行" width="220">
+        <template #default="{ row }">
+          <div class="last-run">
+            <el-tooltip
+              v-if="errorText(row.errorCode, row.errorMsg)"
+              :content="errorText(row.errorCode, row.errorMsg)"
+              placement="top"
+              :show-after="200"
+            >
+              <el-tag size="small" :type="runTagType(row.status)">{{ runStatusText(row.status) }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else size="small" :type="runTagType(row.status)">{{ runStatusText(row.status) }}</el-tag>
+            <span class="last-run-meta">
+              {{ formatTime(row.lastRunAt) }}
+              <template v-if="row.retryCount"> · 重试 {{ row.retryCount }} 次</template>
+            </span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="390">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="primary" @click="openRuns(row)">运行历史</el-button>
+          <el-button v-if="row.status === 'running' || row.status === 'failed'" link type="warning" @click="recover(row)">恢复</el-button>
           <el-button link type="success" :disabled="row.status === 'running'" @click="start(row)">启动</el-button>
           <el-button link type="warning" :disabled="row.status !== 'running'" @click="stop(row)">停止</el-button>
           <el-button link type="primary" @click="run(row)">试跑</el-button>
@@ -57,6 +78,9 @@
         <el-form-item label="配置 JSON">
           <el-input v-model="form.config" type="textarea" :rows="4" placeholder='{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险"}' />
         </el-form-item>
+        <el-form-item label="自动恢复">
+          <el-checkbox v-model="autoRecover">服务重启后自动恢复</el-checkbox>
+        </el-form-item>
         <el-form-item label="灵敏度">
           <el-slider v-model="form.sensitivity" :min="1" :max="100" show-input />
         </el-form-item>
@@ -83,6 +107,50 @@
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-drawer v-model="runsVisible" :title="`运行历史 · ${runTask?.name || ''}`" size="62%">
+      <div class="runs-toolbar">
+        <el-button :loading="runsLoading" @click="loadRuns">刷新</el-button>
+        <span class="runs-hint">每 5 秒自动刷新，关闭后停止</span>
+      </div>
+      <el-table :data="runs" border size="small" v-loading="runsLoading">
+        <el-table-column label="启动时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.startedAt || row.lastRunAt) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="runTagType(row.status)">{{ runStatusText(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="120">
+          <template #default="{ row }">{{ durationText(row.startedAt, row.finishedAt, row.lastRunAt) }}</template>
+        </el-table-column>
+        <el-table-column label="重试次数" width="90">
+          <template #default="{ row }">{{ row.retryCount ?? 0 }}</template>
+        </el-table-column>
+        <el-table-column label="错误分类 / 信息" min-width="240">
+          <template #default="{ row }">
+            <el-tooltip v-if="errorText(row.errorCode, row.errorMsg)" :content="errorText(row.errorCode, row.errorMsg)" placement="top" :show-after="200">
+              <span class="run-error">
+                <el-tag v-if="row.errorCode" size="small" type="danger" effect="plain">{{ row.errorCode }}</el-tag>
+                <span>{{ row.errorMsg || row.errorCode }}</span>
+              </span>
+            </el-tooltip>
+            <span v-else class="run-muted">-</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!runsLoading && !runs.length" description="暂无运行记录" />
+      <el-pagination
+        v-if="runsTotal > 0"
+        style="margin-top: 12px; justify-content: flex-end"
+        layout="total, prev, pager, next"
+        :total="runsTotal"
+        :page-size="runsPageSize"
+        :current-page="runsPage"
+        @current-change="onRunsPage"
+      />
+    </el-drawer>
 
     <el-dialog v-model="roiVisible" title="ROI 框选" width="760px" :close-on-click-modal="false" @open="initRoiWorkbench">
       <div class="roi-toolbar">
@@ -160,10 +228,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiApi, channelApi, resolveSnapshotSrc, snapshotApi } from '../api'
-import type { AIProvider, AITask, Channel } from '../types'
+import type { AIProvider, AITask, AITaskRun, Channel } from '../types'
 
 const tasks = ref<AITask[]>([])
 const channels = ref<Channel[]>([])
@@ -182,6 +250,17 @@ const form = reactive<Partial<AITask>>({
   sensitivity: 50,
   config: '{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险，输出 JSON"}',
 })
+const autoRecover = ref(false)
+
+const runsVisible = ref(false)
+const runTask = ref<AITask | null>(null)
+const runs = ref<AITaskRun[]>([])
+const runsLoading = ref(false)
+const runsPage = ref(1)
+const runsPageSize = 10
+const runsTotal = ref(0)
+let runsTimer: ReturnType<typeof setInterval> | undefined
+let runsSeq = 0
 
 function scheduleText(s: string) {
   if (!s) return '全天'
@@ -200,6 +279,78 @@ function channelName(id: number) {
 function providerName(id: number) {
   const p = providers.value.find((x) => x.id === id)
   return p ? `${p.name} (${p.kind})` : `#${id}`
+}
+
+function timeValue(v?: string | null) {
+  if (!v) return 0
+  const t = Date.parse(v)
+  return Number.isFinite(t) && t > 0 ? t : 0
+}
+
+function formatTime(v?: string | null) {
+  const t = timeValue(v)
+  return t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function runStatusText(status?: string) {
+  const names: Record<string, string> = {
+    pending: '等待中',
+    starting: '启动中',
+    running: '运行中',
+    stopping: '停止中',
+    failed: '失败',
+    stopped: '已停止',
+    succeeded: '成功',
+  }
+  return status ? names[status] || status : '-'
+}
+
+function runTagType(status?: string) {
+  if (status === 'running') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'succeeded') return 'primary'
+  if (status === 'pending' || status === 'starting') return 'warning'
+  return 'info'
+}
+
+function errorText(code?: string | null, msg?: string | null) {
+  return [code, msg].filter(Boolean).join(' · ')
+}
+
+function durationText(startedAt?: string | null, finishedAt?: string | null, lastRunAt?: string | null) {
+  const start = timeValue(startedAt)
+  if (!start) return '-'
+  const finished = timeValue(finishedAt)
+  const last = timeValue(lastRunAt)
+  const end = finished || (last > start ? last : 0)
+  if (!end || end < start) return '-'
+  const sec = Math.round((end - start) / 1000)
+  return sec < 60 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`
+}
+
+function configAutoRecover(config?: string) {
+  if (!config) return false
+  try {
+    const o = JSON.parse(config)
+    return !!o && typeof o === 'object' && o.autoRecover === true
+  } catch {
+    return false
+  }
+}
+
+function withAutoRecover(config: string | undefined, enabled: boolean): string | null {
+  const raw = (config || '').trim()
+  let obj: Record<string, unknown>
+  if (!raw) obj = {}
+  else {
+    try {
+      obj = JSON.parse(raw)
+    } catch {
+      return null
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+  }
+  return JSON.stringify({ ...obj, autoRecover: enabled })
 }
 
 async function load() {
@@ -227,6 +378,7 @@ function openCreate() {
     config: '{"intervalSec":30,"grabFrame":true,"prompt":"检测画面中的安全风险，输出 JSON"}',
   })
   Object.assign(schedule, { days: 'daily', start: '00:00', end: '23:59' })
+  autoRecover.value = false
   visible.value = true
 }
 
@@ -241,6 +393,7 @@ function openEdit(row: AITask) {
     roi: row.roi,
     sensitivity: row.sensitivity || 50,
   })
+  autoRecover.value = configAutoRecover(row.config)
   try {
     const o = JSON.parse(row.schedule || '{}')
     Object.assign(schedule, { days: o.days || 'daily', start: o.start || '00:00', end: o.end || '23:59' })
@@ -258,11 +411,17 @@ function syncKind() {
 }
 
 async function save() {
+  const config = withAutoRecover(form.config, autoRecover.value)
+  if (config === null) {
+    ElMessage.error('配置 JSON 格式不正确，请修正后保存')
+    return
+  }
   saving.value = true
   try {
     const payload: Partial<AITask> = {
       ...form,
       schedule: JSON.stringify(schedule),
+      config,
     }
     if (editingId.value) {
       await aiApi.updateTask(editingId.value, payload)
@@ -302,6 +461,76 @@ async function remove(row: AITask) {
   await aiApi.removeTask(row.id)
   load()
 }
+
+async function recover(row: AITask) {
+  try {
+    const res = await aiApi.recoverTask(row.id)
+    ElMessage.success(res.recovered ? '任务已恢复' : `任务当前状态：${res.status || '未变化'}`)
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '恢复失败')
+  }
+}
+
+// ---- 运行历史 ----
+
+function openRuns(row: AITask) {
+  runTask.value = row
+  runsPage.value = 1
+  runs.value = []
+  runsTotal.value = 0
+  runsVisible.value = true
+}
+
+function stopRunsTimer() {
+  if (runsTimer) {
+    clearInterval(runsTimer)
+    runsTimer = undefined
+  }
+}
+
+async function loadRuns() {
+  const id = runTask.value?.id
+  if (!id) return
+  const seq = ++runsSeq
+  runsLoading.value = true
+  try {
+    const res = await aiApi.taskRuns(id, { page: runsPage.value, pageSize: runsPageSize })
+    if (seq !== runsSeq || !runsVisible.value || runTask.value?.id !== id) return
+    runs.value = res.items || []
+    runsTotal.value = res.total || 0
+  } catch {
+    if (seq === runsSeq) {
+      runs.value = []
+      runsTotal.value = 0
+    }
+  } finally {
+    if (seq === runsSeq) runsLoading.value = false
+  }
+}
+
+function onRunsPage(page: number) {
+  runsPage.value = page
+  loadRuns()
+}
+
+watch([runsVisible, () => runTask.value?.id], ([open]) => {
+  runsSeq++
+  stopRunsTimer()
+  if (!open) {
+    runTask.value = null
+    return
+  }
+  loadRuns()
+  runsTimer = setInterval(() => {
+    if (runsVisible.value) loadRuns()
+  }, 5000)
+})
+
+onBeforeUnmount(() => {
+  runsSeq++
+  stopRunsTimer()
+})
 
 // ---- ROI 框选 ----
 
@@ -506,6 +735,38 @@ onMounted(load)
 </script>
 
 <style scoped>
+.last-run {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.last-run-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+.run-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-muted {
+  color: #94a3b8;
+}
+.runs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.runs-hint {
+  font-size: 12px;
+  color: #64748b;
+}
 .roi-field {
   width: 100%;
 }

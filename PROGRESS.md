@@ -645,3 +645,12 @@
 - **验证通过**：`gofmt -l` 无输出；`go build ./...`、`go vet ./...`、`go test ./...` 全绿（新增快照签名/路径穿越/权限、配置 DTO 加解密与权限用例）；`cd web && npm run build`（vue-tsc + vite）通过，仅既有 chunk 体积警告。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：等待人工审查后再进入第四批（TASK-006/007 AI 任务可靠性）；敏感配置的三条前端路径（留空不改/显式清除/输入新值）建议联调时点击复核。
+
+### 2026-11-24（TASK-006/007 AI 任务持久化与调度稳定性）
+- **已完成**：
+  - **运行记录与恢复**：新增 `model.AITaskRun` 与自动迁移；`Runner` 重写为带全局/单通道信号量、per-task 互斥、独立可取消 context + 任务级 timeout、心跳、指数退避重试（2^n×base，封顶 60s）与 8 类结构化错误码的调度器；仅 `config.autoRecover:true` 的任务在 `Recover()` 时自动拉起；`App.Close()`/SIGTERM 优雅取消并落终态；`AITask.last_error_code/last_error_msg` 用 `Migrator().HasColumn` 可选写入（旧库兼容）。重试只在未产生事件且错误属于 provider/stream/frame 类时进行，避免重复事件与通知。
+  - **API/前端**：新增 `GET /ai/tasks/:id/runs`、`GET /runs/:runId`、`POST /recover`；旧 `/run` 响应结构不变。任务页新增最近运行列（状态/时间/重试/错误 tooltip）、运行历史抽屉（5s 刷新、分页、防竞态/定时器泄漏）、恢复按钮与「服务重启后自动恢复」开关。
+  - **配置**：`EASYAVR_AI_MAX_CONCURRENCY=4`、`EASYAVR_AI_PER_CHANNEL_LIMIT=1`、`EASYAVR_AI_TASK_TIMEOUT_SEC=120`、`EASYAVR_AI_MAX_RETRIES=2`、`EASYAVR_AI_BACKOFF_BASE_MS=2000`；生产校验拒绝非法值且只列变量名。README/AGENTS.md 已登记。
+- **验证通过**：`gofmt -l` 无输出；`go build ./...`、`go test ./...`（新增 runner 单测覆盖重复 Start/取消/超时/并发上限/pending/退避/错误分类/Recover 与三条新 API，均不依赖真实 ZLM/ffmpeg）、`go vet ./...` 全绿；`cd web && npm run build`（vue-tsc + vite）通过，仅既有 chunk 体积警告。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：等待人工审查后再进入第五批（TASK-008/009/010 快照/录像生命周期与磁盘监控）；真机验证自动恢复与并发限额行为。
