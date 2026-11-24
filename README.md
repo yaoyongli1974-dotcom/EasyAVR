@@ -70,8 +70,12 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 | `EASYAVR_DB` | `./data/easyavr.db` | SQLite 路径（driver=sqlite 时生效） |
 | `EASYAVR_DB_DSN` | 空 | PostgreSQL DSN，如 `postgres://user:pass@host:5432/easyavr?sslmode=disable` |
 | `EASYAVR_PGVECTOR` | `true` | PostgreSQL 下用 pgvector 存储/检索事件向量（扩展不可用时自动退化） |
+| `EASYAVR_ENV` | `development` | 设为 `production` 时启动前强制校验默认密钥/弱口令/CORS/目录权限，不合格拒绝启动 |
+| `EASYAVR_CREDENTIAL_KEY` | 空 | 凭据加密主密钥（`openssl rand -base64 32`）；生产必需，独立于数据库备份保存 |
+| `EASYAVR_CREDENTIAL_KEY_ID` | `v1` | 当前密钥 ID，写入每条密文；轮换时递增 |
+| `EASYAVR_CREDENTIAL_KEY_PREVIOUS` | 空 | 旧密钥列表 `<kid>:<key>`，逗号分隔；仅用于解密与迁移重加密 |
 | `EASYAVR_JWT_SECRET` | `easyavr-dev-secret-change-me` | JWT 密钥（生产必须修改） |
-| `EASYAVR_ADMIN_USER/PASS` | `easyavr` / `easyavr` | 首次启动创建的管理员 |
+| `EASYAVR_ADMIN_USER/PASS` | `easyavr` / `easyavr` | 首次启动创建的管理员（生产必须修改） |
 | `EASYAVR_ZLM_API` | `http://127.0.0.1:80` | ZLMediaKit HTTP API |
 | `EASYAVR_ZLM_SECRET` | `EasyAVRzlmSecret2024x` | ZLM API secret（`docker-compose.yml` 已通过 `deploy/zlm/config.ini` 固定为同值） |
 | `EASYAVR_MEDIA_HOST` | `127.0.0.1` | 浏览器可访问的媒体主机 |
@@ -86,7 +90,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 | `EASYAVR_GB_LISTEN` | `:5060` | SIP UDP 监听地址 |
 | `EASYAVR_GB_ID` | `34020000002000000001` | 平台 SIP 编码（20 位） |
 | `EASYAVR_GB_REALM` | `3402000000` | SIP 域 / Realm |
-| `EASYAVR_GB_PASSWORD` | `easyavr123` | SIP 摘要鉴权密码 |
+| `EASYAVR_GB_PASSWORD` | `easyavr123` | SIP 摘要鉴权密码初值；运行期由管理员经 `/gb/config/password` 轮换后加密持久化，重启继续有效 |
 | `EASYAVR_GB_RTP_IP` | `127.0.0.1` | SDP 中通告的收流 IP（需设备可达） |
 | `EASYAVR_GA1400_ENABLED` | `false` | 启用 GA/T1400（VIID）入库端点 `/VIID/*` |
 | `EASYAVR_EHOME_ENABLED` | `false` | 启用 EHOME/ISUP UDP 接入 |
@@ -115,6 +119,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 
 ## 三期功能（进行中）
 
+- **安全加固（EASYAVR-TECH-001）**：数据库凭据（设备密码、AI API Key、存储密钥、通知/级联密码）AES-256-GCM 加密存储并支持密钥轮换；`EASYAVR_ENV=production` 启动时拒绝默认密钥/弱口令；审计日志不再记录请求体；GB28181 SIP 密钥只显示"已配置"并支持管理员运行期加密持久化轮换。见 `deploy/README.md`。
 - **多屏播放**：1/4/9/16 分屏、轮播、播放记忆（WebRTC）。见「多屏播放」页。
 - **告警通知**：Webhook / 邮件渠道 + 按级别/类型/能力的匹配规则。见「告警通知」页。
 - **智能检索**：事件向量化 + 余弦检索，未配置嵌入模型时退化为关键词。见「智能检索」页；在「AI 能力接入」注册 `embedding` 类型能力即可启用向量检索。

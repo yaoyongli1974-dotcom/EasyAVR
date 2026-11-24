@@ -5,12 +5,25 @@ import (
 	"log"
 
 	"github.com/easyavr/easyavr/internal/config"
+	"github.com/easyavr/easyavr/internal/security"
 	"github.com/easyavr/easyavr/internal/server"
 	"github.com/easyavr/easyavr/internal/store"
 )
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("configuration: %v", err)
+	}
+	enc, err := security.New(cfg.CredentialKey, cfg.CredentialKeyID, cfg.CredentialKeyPrevious)
+	if cfg.CredentialKey != "" {
+		if err != nil {
+			log.Fatalf("credential encryption key: %v", err)
+		}
+		security.SetDefault(enc)
+	} else if cfg.IsProduction() {
+		log.Fatal("configuration: EASYAVR_CREDENTIAL_KEY is required in production")
+	}
 
 	db, err := store.OpenWith(cfg.DBDriver, cfg.DatabaseDSN())
 	if err != nil {
@@ -18,6 +31,11 @@ func main() {
 	}
 	if err := store.Seed(db, cfg.AdminUser, cfg.AdminPass); err != nil {
 		log.Fatalf("seed database: %v", err)
+	}
+	if password, found, err := store.PersistedGBPassword(db); err != nil {
+		log.Fatalf("load persisted GB SIP password: %v", err)
+	} else if found {
+		cfg.GB.Password = password
 	}
 
 	app := server.New(cfg, db)

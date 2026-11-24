@@ -86,7 +86,7 @@ func openPostgres(dsn string) (*gorm.DB, error) {
 
 // migrate runs the automatic schema migration for all models.
 func migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.User{},
 		&model.Role{},
 		&model.Device{},
@@ -133,7 +133,10 @@ func migrate(db *gorm.DB) error {
 		&model.TranscodeJob{},
 		&model.CloudStore{},
 		&model.RecordingArchive{},
-	)
+	); err != nil {
+		return err
+	}
+	return migrateCredentials(db)
 }
 
 // Seed creates the initial admin account and built-in roles when empty.

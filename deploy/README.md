@@ -105,7 +105,13 @@ go run ./cmd/auditscrub -driver postgres -dsn "$EASYAVR_DB_DSN" \
 
 - `GET /api/v1/gb/config` 与 `GET /api/v1/config/platform` **不返回密码明文**，只返回 `passwordConfigured` 布尔值；前端只显示「已配置（不回显）/未配置」。
 - 管理员可通过 `PUT /api/v1/gb/config/password`（body `{"password":"..."}`）修改运行中的 SIP 摘要认证密码：对**后续 REGISTER 鉴权立即生效**，无需重启 SIP 服务；已注册设备保持原会话，重新注册时改用新密码。
-- 该修改是**运行期**变更，服务重启后恢复为环境变量 `EASYAVR_GB_PASSWORD` 的值。要持久化，须由人工修改 `/etc/easyavr/env` 并重启服务；自动化流程不得改动生产凭据。第二批实现凭据加密存储后，再评估把轮换写入加密配置（避免明文落盘）。
+- 该修改**即时生效并加密持久化**（写入 `platform_settings` 的 `gb.sip.password`，密文格式 `enc:<kid>:...`），服务重启后继续有效，且覆盖环境变量初值；不再修改 `/etc/easyavr/env`。如需清除密钥须由人工直接处理数据库/环境变量（接口未提供清除操作）。
+
+### 凭据加密与生产安全启动（TASK-002 / TASK-003）
+
+- 数据库里的设备密码、AI Provider API Key、对象存储 AccessKey/SecretKey、通知渠道 Secret/SMTP 密码、级联密码由 GORM 钩子透明加解密（AES-256-GCM，随机 nonce，密文带 `enc:<kid>:` 前缀）；`User.PasswordHash`、`APIKey.KeyHash` 本来就是哈希，不在加密范围。
+- 主密钥由 `EASYAVR_CREDENTIAL_KEY` 提供（`openssl rand -base64 32` 生成），**不得写入数据库或与数据库备份一起存放**。启动时会把旧明文行加密、把旧 kid 的密文用当前密钥重加密；遇到未知 kid 或无法解密的数据会直接报错停止，不退回明文。轮换步骤见 `deploy/env.example` 顶部注释。
+- `EASYAVR_ENV=production` 会在服务启动前检查：JWT 密钥/管理员密码/集群密钥/GB 口令不是公开默认值且长度足够、凭据主密钥已配置、CORS 无通配符、GB/GB35114 启用参数完整、证书/快照/数据库目录可写。错误信息只列变量名，不输出密钥值。开发环境（默认）保留原有便利默认值。
 
 ### PostgreSQL 迁移验证（TASK-001 遗留项）
 

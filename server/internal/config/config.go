@@ -1,35 +1,46 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/easyavr/easyavr/internal/security"
 )
 
 // Config holds runtime configuration for the EasyAVR server.
 // Values are resolved from environment variables with sane defaults so the
 // server can boot with zero external dependencies for local development.
 type Config struct {
-	Listen      string
-	DBDriver    string // sqlite (default) | postgres
-	DBPath      string // sqlite file path
-	DBDSN       string // postgres DSN, e.g. postgres://user:pass@host:5432/easyavr
-	JWTSecret   string
-	JWTExpireH  int
-	AdminUser   string
-	AdminPass   string
-	PGVector    bool // use pgvector for embeddings when on PostgreSQL
-	ZLM         ZLMConfig
-	AllowOrigin string
-	SnapshotDir string
-	MonitorSec  int
-	GB          GBConfig
-	Cluster     ClusterConfig
-	GA1400      GA1400Config
-	EHOME       EHOMEConfig
-	GB35114     GB35114Config
-	Map         MapConfig
-	Playback    PlaybackConfig
+	Env        string // production enables strict startup validation
+	Listen     string
+	DBDriver   string // sqlite (default) | postgres
+	DBPath     string // sqlite file path
+	DBDSN      string // postgres DSN, e.g. postgres://user:pass@host:5432/easyavr
+	JWTSecret  string
+	JWTExpireH int
+	AdminUser  string
+	AdminPass  string
+	// CredentialKey is the AES-256-GCM master key for credentials at rest.
+	// It may be base64, hex or a raw passphrase; the key ID is embedded in
+	// every ciphertext so keys can be rotated without breaking old rows.
+	CredentialKey         string
+	CredentialKeyID       string
+	CredentialKeyPrevious []string // entries of "<kid>:<key>", used for decryption only
+	PGVector              bool     // use pgvector for embeddings when on PostgreSQL
+	ZLM                   ZLMConfig
+	AllowOrigin           string
+	SnapshotDir           string
+	MonitorSec            int
+	GB                    GBConfig
+	Cluster               ClusterConfig
+	GA1400                GA1400Config
+	EHOME                 EHOMEConfig
+	GB35114               GB35114Config
+	Map                   MapConfig
+	Playback              PlaybackConfig
 }
 
 // PlaybackConfig governs signed playback URLs (手册 3.7.1.1 播放鉴权/播放时效/播放白名单).
@@ -110,18 +121,22 @@ type ZLMConfig struct {
 
 func Load() *Config {
 	return &Config{
-		Listen:      env("EASYAVR_LISTEN", ":18000"),
-		DBDriver:    env("EASYAVR_DB_DRIVER", "sqlite"),
-		DBPath:      env("EASYAVR_DB", "./data/easyavr.db"),
-		DBDSN:       env("EASYAVR_DB_DSN", ""),
-		JWTSecret:   env("EASYAVR_JWT_SECRET", "easyavr-dev-secret-change-me"),
-		JWTExpireH:  envInt("EASYAVR_JWT_EXPIRE_HOURS", 24),
-		AdminUser:   env("EASYAVR_ADMIN_USER", "easyavr"),
-		AdminPass:   env("EASYAVR_ADMIN_PASS", "easyavr"),
-		PGVector:    envBool("EASYAVR_PGVECTOR", true),
-		AllowOrigin: env("EASYAVR_ALLOW_ORIGIN", "*"),
-		SnapshotDir: env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
-		MonitorSec:  envInt("EASYAVR_MONITOR_SEC", 0),
+		Env:                   env("EASYAVR_ENV", "development"),
+		Listen:                env("EASYAVR_LISTEN", ":18000"),
+		DBDriver:              env("EASYAVR_DB_DRIVER", "sqlite"),
+		DBPath:                env("EASYAVR_DB", "./data/easyavr.db"),
+		DBDSN:                 env("EASYAVR_DB_DSN", ""),
+		JWTSecret:             env("EASYAVR_JWT_SECRET", "easyavr-dev-secret-change-me"),
+		JWTExpireH:            envInt("EASYAVR_JWT_EXPIRE_HOURS", 24),
+		AdminUser:             env("EASYAVR_ADMIN_USER", "easyavr"),
+		AdminPass:             env("EASYAVR_ADMIN_PASS", "easyavr"),
+		CredentialKey:         env("EASYAVR_CREDENTIAL_KEY", ""),
+		CredentialKeyID:       env("EASYAVR_CREDENTIAL_KEY_ID", "v1"),
+		CredentialKeyPrevious: parsePreviousKeys(env("EASYAVR_CREDENTIAL_KEY_PREVIOUS", "")),
+		PGVector:              envBool("EASYAVR_PGVECTOR", true),
+		AllowOrigin:           env("EASYAVR_ALLOW_ORIGIN", "*"),
+		SnapshotDir:           env("EASYAVR_SNAPSHOT_DIR", "./data/snapshots"),
+		MonitorSec:            envInt("EASYAVR_MONITOR_SEC", 0),
 		GB: GBConfig{
 			Enabled:     envBool("EASYAVR_GB_ENABLED", false),
 			Listen:      env("EASYAVR_GB_LISTEN", ":5060"),
@@ -180,6 +195,100 @@ func Load() *Config {
 			WSPort:      envInt("EASYAVR_ZLM_WS_PORT", 80),
 		},
 	}
+}
+
+// IsProduction reports whether strict startup checks apply.
+func (c *Config) IsProduction() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Env)) {
+	case "production", "prod":
+		return true
+	}
+	return false
+}
+
+// Validate rejects unsafe configuration before the service starts in
+// production. Error messages name the setting but never include its value.
+func (c *Config) Validate() error {
+	if !c.IsProduction() {
+		return nil
+	}
+	var problems []string
+	if c.JWTSecret == "easyavr-dev-secret-change-me" || len(c.JWTSecret) < 16 {
+		problems = append(problems, "EASYAVR_JWT_SECRET is a default or too short")
+	}
+	if c.AdminPass == "easyavr" || len(c.AdminPass) < 8 {
+		problems = append(problems, "EASYAVR_ADMIN_PASS is a default or too short")
+	}
+	if _, err := security.ParseKey(c.CredentialKey); err != nil {
+		problems = append(problems, "EASYAVR_CREDENTIAL_KEY is missing or invalid")
+	}
+	if strings.Contains(c.AllowOrigin, "*") {
+		problems = append(problems, "EASYAVR_ALLOW_ORIGIN must not contain a wildcard in production")
+	}
+	if c.Cluster.Enabled {
+		if c.Cluster.Secret == "easyavr-cluster-secret" || len(c.Cluster.Secret) < 16 {
+			problems = append(problems, "EASYAVR_CLUSTER_SECRET is a default or too short")
+		}
+	}
+	if c.GB.Enabled {
+		if len(c.GB.ID) != 20 || c.GB.Realm == "" || c.GB.Password == "" || c.GB.Password == "easyavr123" {
+			problems = append(problems, "EASYAVR_GB_ID / REALM / PASSWORD are incomplete or use defaults")
+		}
+	}
+	if c.GB35114.Enabled {
+		if strings.TrimSpace(c.GB35114.CertDir) == "" {
+			problems = append(problems, "EASYAVR_GB35114_CERT_DIR is empty")
+		} else if err := checkWritableDir(c.GB35114.CertDir); err != nil {
+			problems = append(problems, "EASYAVR_GB35114_CERT_DIR is not a writable directory")
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(c.DBDriver)) {
+	case "", "sqlite", "sqlite3":
+		if strings.TrimSpace(c.DBPath) == "" {
+			problems = append(problems, "EASYAVR_DB is empty")
+		} else if err := checkWritableDir(filepath.Dir(c.DBPath)); err != nil {
+			problems = append(problems, "EASYAVR_DB parent directory is not writable")
+		}
+	case "postgres", "postgresql", "pgx":
+		if strings.TrimSpace(c.DBDSN) == "" {
+			problems = append(problems, "EASYAVR_DB_DSN is empty")
+		}
+	default:
+		problems = append(problems, "EASYAVR_DB_DRIVER is unsupported")
+	}
+	if err := checkWritableDir(c.SnapshotDir); err != nil {
+		problems = append(problems, "EASYAVR_SNAPSHOT_DIR is not a writable directory")
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("production configuration invalid: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func checkWritableDir(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(path, ".easyavr-check-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
+
+func parsePreviousKeys(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // DatabaseDSN returns the effective DSN for the configured driver: the file

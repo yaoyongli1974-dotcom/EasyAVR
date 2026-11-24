@@ -607,3 +607,18 @@
   1. 生产库的历史审计脱敏须由运维按 `deploy/README.md` 审批、备份后执行（本工具不会自动连生产库）。
   2. GB28181 运行期密钥轮换重启后失效是既定设计；持久化为避免明文落盘，留到第二批凭据加密后实现；生产凭据修改仍须人工。
 - **当前状态**：第一批遗留项中本地可解决的两项已解决；等待人工审查后进入第二批（TASK-002/003）。
+
+### 2026-11-24（EASYAVR-TECH-001 第二批：TASK-002 + TASK-003，含 GB 密钥重启持久化）
+- **已完成**：
+  - **凭据加密**（`internal/security`）：AES-256-GCM + 随机 nonce，密文格式 `enc:<kid>:<base64>`；主密钥仅来自 `EASYAVR_CREDENTIAL_KEY`（支持 base64/hex/原文推导），`EASYAVR_CREDENTIAL_KEY_PREVIOUS=<kid>:<key>` 支持轮换解密。GORM 钩子透明加密 `Device.Password`、`AIProvider.APIKey`、`CloudStore.AccessKey/SecretKey`、`NotificationChannel.Secret/SMTPPassword`、`GBCascade/GBWhiteList/GA1400Cascade.Password`；哈希字段（User/APIKey）不动。未配置密钥的开发环境钩子无操作。
+  - **迁移**：`store.OpenWith` 在 AutoMigrate 后执行 `migrateCredentials`：旧明文行加密后校验解密一致，旧 kid 密文用旧密钥解密再用新 kid 重加密；未知 kid/无法解密直接报错停止，不退回明文。表名由 GORM schema 动态解析（避免 `AIProvider → a_iproviders` 这类缩写表名硬编码错误）。
+  - **GB 密钥重启持久化**（并入本批）：`PUT /gb/config/password` 现在把密码加密写入 `platform_settings.gb.sip.password` 并即时 SetPassword；启动时 `main` 读出覆盖 `cfg.GB.Password`，重启后仍生效、覆盖环境变量初值；响应 note 已更新，仍不回显密码。
+  - **生产安全启动**（TASK-003）：`Config.Validate()` + `EASYAVR_ENV=production`，启动前拒绝默认 JWT 密钥/管理员密码/集群密钥/GB 口令、通配符 CORS、缺凭据密钥、GB/GB35114 参数不完整、目录不可写；错误信息只含变量名不含值。`deploy/env.example`/README/AGENTS.md/`deploy/README.md` 已同步。
+- **修改文件**：新增 `internal/security/{credential.go,credential_test.go}`、`internal/model/credentials.go` + 测试、`internal/store/{credential_migrate.go,credential_migrate_test.go,gb_password.go,gb_password_test.go}`；修改 `internal/config/config.go` + 新测试、`internal/store/store.go`、`internal/server/handler_gb.go` + 测试、`cmd/easyavr/main.go`、`deploy/env.example`、`deploy/README.md`、`README.md`、`AGENTS.md`。
+- **数据库变更**：无 schema 变更；启动时对存量凭据列做加密数据迁移（幂等，有验证失败的 fail-closed 路径）。SQLite 与 PG 均已通过迁移测试。
+- **API 变更**：无新增/删除路由；`PUT /gb/config/password` 行为增强为加密持久化（响应字段不变）。
+- **验证结果**：`go build ./...`、`gofmt -l` 无输出、`go test ./...` 全绿、`go vet ./...` 零输出；新旧密钥轮换/篡改检测/错误密钥、模型钩子落库、迁移幂等与旧 kid 重加密、生产校验拒绝默认值且不泄露值、GB 轮换持久化均有用例；真实 PG 临时库 `TestPostgresMigration` + `TestPostgresCredentialEncryption` PASS；开发库副本 `EASYAVR_TEST_MIGRATION_DB` 演练 PASS（云存储密钥已转为 `enc:v1:`）；`npm run build` 通过（无前端改动）。
+- **尚未解决 / 受限**：
+  1. 生产环境密钥与 env 的实际变更仍需人工审批，本批未连接生产服务器。
+  2. `CloudStore.AccessKey` 目前仍通过 JSON 返回（历史 API），本批只做加密存储，API 掩码留给第三批 TASK-012。
+- **当前状态**：第二批完成并验收，按批次机制停止，等待人工审查后再进入第三批（TASK-005/011/012）。

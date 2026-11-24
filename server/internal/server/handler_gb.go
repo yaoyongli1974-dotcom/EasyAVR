@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/easyavr/easyavr/internal/model"
+	"github.com/easyavr/easyavr/internal/store"
 )
 
 func (a *App) listGBDevices(c *gin.Context) {
@@ -36,8 +37,8 @@ func (a *App) gbConfig(c *gin.Context) {
 	})
 }
 
-// updateGBPassword rotates the SIP digest password for subsequent REGISTERs.
-// The value lives in memory only; restarting restores EASYAVR_GB_PASSWORD.
+// updateGBPassword rotates the SIP digest password for subsequent REGISTERs
+// and persists it encrypted so the change survives a service restart.
 func (a *App) updateGBPassword(c *gin.Context) {
 	var req struct {
 		Password string `json:"password"`
@@ -55,10 +56,14 @@ func (a *App) updateGBPassword(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "密码长度不能超过 128 个字符")
 		return
 	}
+	if err := store.SaveGBPassword(a.db, pw); err != nil {
+		fail(c, http.StatusInternalServerError, "密钥保存失败")
+		return
+	}
 	a.gb.SetPassword(pw)
 	ok(c, gin.H{
 		"updated": true,
-		"note":    "密码已即时生效（仅内存），服务重启后将恢复环境变量 EASYAVR_GB_PASSWORD 的值",
+		"note":    "密码已即时生效并加密持久化，服务重启后继续有效",
 	})
 }
 

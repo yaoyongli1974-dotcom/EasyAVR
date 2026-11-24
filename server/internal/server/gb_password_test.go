@@ -5,6 +5,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
+	"github.com/easyavr/easyavr/internal/security"
 )
 
 func gbConfigData(t *testing.T, base, token string) map[string]any {
@@ -136,5 +142,40 @@ func TestGBPasswordNotExposedAndAdminRotation(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"passwordConfigured":true`) {
 		t.Fatalf("GET /config/platform missing passwordConfigured=true: %s", raw)
+	}
+}
+
+// TestGBPasswordRotationPersists verifies the batch-2 addition: rotation via
+// the admin API writes an encrypted setting so a restart can restore it.
+func TestGBPasswordRotationPersists(t *testing.T) {
+	e, err := security.New("api-rotation-key", "v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	security.SetDefault(e)
+	t.Cleanup(func() { security.SetDefault(nil) })
+
+	srv, cfg := newTestServer(t)
+	admin := login(t, srv.URL)
+	var r apiResp
+	if code := doJSON(t, http.MethodPut, srv.URL+"/api/v1/gb/config/password", admin,
+		map[string]string{"password": "PersistedSipPass123"}, &r); code != http.StatusOK {
+		t.Fatalf("rotation status = %d, body = %+v", code, r)
+	}
+	db, err := gorm.Open(sqlite.Open(cfg.DBPath), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := db.Table("platform_settings").Where("key = ?", "gb.sip.password").
+		Pluck("value", &raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(raw, "enc:v1:") || strings.Contains(raw, "PersistedSipPass123") {
+		t.Fatalf("rotated password stored in plaintext: %q", raw)
+	}
+	plain, err := e.Decrypt(raw)
+	if err != nil || plain != "PersistedSipPass123" {
+		t.Fatalf("persisted password decrypt: %q, %v", plain, err)
 	}
 }
