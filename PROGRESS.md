@@ -735,3 +735,8 @@
 - **已完成**：第二轮 8 个提交已从分支 `feature/easyavr-tech-002-security-reliability` 推送至 `origin`，远端新分支已创建并设为上游；本地 HEAD 与 `origin/feature/easyavr-tech-002-security-reliability` 同为 `b8a4dcc`。未合并 main，未自动开 PR。
 - **当前状态**：完成（已推送，等待人工审查/合并）
 - **下一步**：人工审查后合并到 main；真实 PG 恢复与密钥轮换演练、真机烟雾测试、UI 点击验证。
+
+### 2026-11-24（EASYAVR-TECH-002 合并至 main 并推送）
+- **已完成**：经用户确认，`feature/easyavr-tech-002-security-reliability` 以 fast-forward 合并入 `main`（`287a007..7e6629f`，36 个文件、+5367/-235），并 `git push origin main` 成功；`origin/main` 已指向 `7e6629f`。feature 分支保留在 GitHub 上。
+- **当前状态**：完成（已推送 main）
+- **下一步**：人工审查 GitHub 上的提交；真实 PG 恢复/密钥轮换演练、真机烟雾测试、UI 点击验证。
