@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -635,5 +637,156 @@ func TestLifecycleConcurrentStartCloseStress(t *testing.T) {
 		if runs := runsFor(t, db, taskID); len(runs) > 1 {
 			t.Fatalf("round %d created %d run records", i, len(runs))
 		}
+	}
+}
+
+// Three-way Start/Stop/Close stress: across 100 independent rounds the task
+// row must agree with the real execution state, no round may launch a second
+// loop or run, and shutdown must leave no tracked work or goroutines behind.
+func TestLifecycleConcurrentStartStopCloseStress(t *testing.T) {
+	runWithInterval(t, time.Hour)
+	const rounds = 100
+	const (
+		settleWindow = 20 * time.Millisecond
+		pollStep     = 2 * time.Millisecond
+		goroutineTol = 32
+	)
+
+	baseline := runtime.NumGoroutine()
+	for round := 0; round < rounds; round++ {
+		t.Run(fmt.Sprintf("round-%03d", round), func(t *testing.T) {
+			db := newRunnerTestDB(t)
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatalf("sql db: %v", err)
+			}
+			// Cleanups run LIFO: the runner closes first, then the SQL pool so
+			// its connectionOpener goroutine cannot skew the leak sample.
+			t.Cleanup(func() { _ = sqlDB.Close() })
+
+			taskID, _ := seedRunnerTask(t, db, `{"intervalSec":0,"grabFrame":false}`)
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			// Hold the attempt open until the three-way call has been issued,
+			// then let cancellation drive it to a terminal state.
+			analyzer := &fakeAnalyzer{fn: func(ctx context.Context, _ AnalyzeInput) ([]Result, error) {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-release
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			r := NewRunnerWithOptions(db, nil, RunnerOptions{
+				TaskTimeout: 5 * time.Second, ShutdownTimeout: 5 * time.Second, MaxRetries: 0,
+			})
+			r.SetAnalyzerFactory(func(model.AIProvider) (Analyzer, error) { return analyzer, nil })
+			t.Cleanup(func() { unblock(); r.Close() }) // idempotent safety net on failure
+
+			// Establish a live loop and an in-flight run first; otherwise a
+			// shutdown winning the initial race would leave nothing to check.
+			if err := r.Start(taskID); err != nil {
+				t.Fatalf("initial start: %v", err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				unblock()
+				t.Fatal("initial analyzer never entered")
+			}
+
+			// Fixed interleaving: duplicate Start, Stop and Close are released
+			// together while that attempt is in flight. The analyzer stays
+			// parked until duplicate Start reports, so Stop cannot retire the
+			// loop before Start's idempotency check runs.
+			ready := make(chan struct{})
+			var armed, done sync.WaitGroup
+			armed.Add(3)
+			done.Add(3)
+			errCh := make(chan error, 1)
+			go func() { defer done.Done(); armed.Done(); <-ready; errCh <- r.Start(taskID) }()
+			go func() { defer done.Done(); armed.Done(); <-ready; r.Stop(taskID) }()
+			go func() { defer done.Done(); armed.Done(); <-ready; r.Close() }()
+			armed.Wait()
+			close(ready)
+			select {
+			case err := <-errCh:
+				if err != nil && !errors.Is(err, ErrRunnerClosed) {
+					unblock()
+					t.Fatalf("concurrent Start: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				unblock()
+				t.Fatal("concurrent Start did not return")
+			}
+			unblock()
+			done.Wait()
+
+			assertQuietRunner(t, r)
+			if !r.IsClosed() {
+				t.Fatal("runner is not closed after the three-way call")
+			}
+
+			// A short bounded observation window catches work that tries to
+			// start or write after every caller has returned.
+			calls := analyzer.callCount()
+			runs := runsFor(t, db, taskID)
+			deadline := time.Now().Add(settleWindow)
+			for time.Now().Before(deadline) {
+				time.Sleep(pollStep)
+			}
+			if got := analyzer.callCount(); got != calls {
+				t.Fatalf("execution started after Close: %d -> %d", calls, got)
+			}
+			after := runsFor(t, db, taskID)
+			if len(after) != len(runs) {
+				t.Fatalf("DB write after Close: runs %d -> %d", len(runs), len(after))
+			}
+			if len(after) > 1 {
+				t.Fatalf("round produced %d runs for one task, want at most 1", len(after))
+			}
+			if calls > 1 {
+				t.Fatalf("round produced %d analyzer calls, want at most 1", calls)
+			}
+			for _, run := range after {
+				switch run.Status {
+				case RunStopped, RunSucceeded, RunFailed, RunTimeout:
+				default:
+					t.Fatalf("run %d has non-terminal status %q", run.ID, run.Status)
+				}
+				if run.FinishedAt == nil {
+					t.Fatalf("run %d has no finished_at (status=%q)", run.ID, run.Status)
+				}
+			}
+
+			var task model.AITask
+			if err := db.First(&task, taskID).Error; err != nil {
+				t.Fatalf("reload task: %v", err)
+			}
+			if !task.Enabled {
+				t.Fatal("task lost its enabled flag after the three-way call")
+			}
+			if task.Status == "running" {
+				t.Fatal("closed runner left a task in status=running with no live loop")
+			}
+		})
+	}
+
+	// Relative goroutine sample: every per-round runner and database is gone,
+	// so the count must settle close to the pre-stress baseline.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := runtime.NumGoroutine()
+		if got <= baseline+goroutineTol {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutine leak after %d rounds: baseline=%d current=%d tolerance=%d",
+				rounds, baseline, got, goroutineTol)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

@@ -153,3 +153,23 @@
 - 远程需显式 `PG_TEST_ALLOW_REMOTE=1` 且 `PG_TEST_REMOTE_HOST`、`PG_TEST_REMOTE_PORT`、`PG_TEST_MAINTENANCE_DB=postgres` 三项与 DSN 完全一致；库名检查保留，远程仅靠库名不得放行。文档明确：即便打开开关也只允许本人明确创建的隔离测试库，绝不指向生产。
 - 新增 `PG_TEST_DSN_CHECK_ONLY=1` 无连接门禁自检（不 psql/不建库/不建目录，退出 0 允许 / 1 拒绝 / 2 缺 DSN）；新增 11 用例门禁测试脚本，断言远程拒绝、三类回环通过、开关+确认通过、确认不匹配/缺失拒绝、业务库名拒绝、无 DSN SKIP、无秘密泄漏。
 - 结果：`bash -n deploy/scripts/*.sh` PASS；`bash deploy/scripts/verify-tech003-dsn-gate-test.sh` → `PASS=66 FAIL=0`；无 DSN SKIP exit 2。真实 PG 恢复演练按任务约束未执行。
+
+---
+
+## 补充审查 TASK-011：Start/Stop/Close 三方并发压力测试
+
+状态：**已完成并通过验证**。
+
+- 文件：`server/internal/ai/runner_lifecycle_test.go`（仅新增测试与 `fmt`/`runtime` import）。
+- 新增 `TestLifecycleConcurrentStartStopCloseStress`：100 轮，每轮新 DB/runner/task；先 Start 建立活跃循环与运行中记录，再用 barrier 同时释放重复 Start + Stop + Close。
+- 断言：关闭后 `inflight`/`tasks`/`chSems` 清空、runner 已关闭、Close 后 20ms 窗口无新的 analyzer 调用与运行记录、每轮至多一个运行记录/调用、所有运行记录终态且含 `FinishedAt`、任务 `Enabled` 保持且 `Status != running`、`runtime.NumGoroutine()` 在 2s 内回落到基线+32 内。
+- 验证：`go test ./internal/ai -run Lifecycle -count=1`、`go test -race ./internal/ai -run Lifecycle -count=1`、`go test -race ./internal/ai -run TestLifecycleConcurrentStartStopCloseStress -count=5`（500 轮）、`go vet ./internal/ai` 全绿。
+
+## 补充审查总体验证记录
+
+- `gofmt -l server/internal/snapshot server/internal/ai`：干净。
+- `go test ./...`、`go vet ./...`：PASS / 零输出。
+- `go test -race ./...`：首轮曾出现一次瞬时 FAIL（日志未保留具体用例）；随后两次全量（`-count=1`）与一次定向三包（server/snapshot/ai）重跑均 EXIT=0，疑为既有测试的时序抖动，列为待观察风险，未跳过或屏蔽任何测试。
+- `GOOS=linux GOARCH=amd64 go build ./...`：PASS；`GOOS=windows GOARCH=amd64 go build ./internal/snapshot/...`：PASS（仓库既有 `internal/storage` syscall.Statfs 导致 Windows 全量构建仍失败，非本次引入）。
+- `bash -n deploy/scripts/*.sh scripts/*.sh`：PASS；DSN 门禁脚本 PASS=66 FAIL=0。
+- 无前端改动，`npm run build` 本批次未重跑（基线已通过）。
