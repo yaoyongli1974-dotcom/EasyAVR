@@ -96,8 +96,9 @@ type runnerState struct {
 	// started is closed once the pre-launch DB work has succeeded or failed.
 	// A concurrent Start waits on it instead of returning nil for an instance
 	// that never actually launched.
-	started chan struct{}
-	initErr error // written before started is closed, read after it is closed
+	started  chan struct{}
+	initErr  error // written before started is closed, read after it is closed
+	replaced bool  // guarded by Runner.mu; a newer Start superseded this instance
 }
 
 // Runner executes AI tasks and writes findings into the AI Event Center.
@@ -116,14 +117,15 @@ type Runner struct {
 	// recovery scan and one-shot run derives from it so shutdown stops new
 	// work while in-flight attempts wind down. inflight/idle let Close wait
 	// without spawning a dedicated waiter goroutine.
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
-	closed     bool          // guarded by mu
-	abandoned  bool          // guarded by mu; set when Close exceeds its grace period
-	closedDone chan struct{} // closed once shutdown begins; idempotent Close waits on it
-	inflight   int           // guarded by mu
-	idle       chan struct{} // closed whenever inflight reaches zero
-	recoverMu  sync.Mutex    // serializes recover scans/work per runner
+	baseCtx         context.Context
+	baseCancel      context.CancelFunc
+	closed          bool          // guarded by mu
+	abandoned       bool          // guarded by mu; set when Close exceeds its grace period
+	shutdownStarted chan struct{} // closed when shutdown begins (Done keeps this meaning)
+	shutdownDone    chan struct{} // closed only after shutdown cleanup has finished
+	inflight        int           // guarded by mu
+	idle            chan struct{} // closed whenever inflight reaches zero
+	recoverMu       sync.Mutex    // serializes recover scans/work per runner
 
 	// Recovery outcome for health probes. Separate mutex so HealthStats can
 	// snapshot it without waiting for a running recovery scan.
@@ -147,8 +149,9 @@ type Runner struct {
 	workerID string
 
 	// Test seams. Defaults are the production implementations.
-	analyzerFactory func(model.AIProvider) (Analyzer, error)
-	frameGrabber    func(context.Context, string) ([]byte, error)
+	analyzerFactory    func(model.AIProvider) (Analyzer, error)
+	frameGrabber       func(context.Context, string) ([]byte, error)
+	startDBUpdatedHook func() // called after the running status is persisted, before launch check
 }
 
 // NewRunner builds a Runner with production defaults.
@@ -171,7 +174,8 @@ func NewRunnerWithOptions(db *gorm.DB, zlm *video.Client, opts RunnerOptions) *R
 		workerID:        newWorkerID(),
 		baseCtx:         baseCtx,
 		baseCancel:      baseCancel,
-		closedDone:      make(chan struct{}),
+		shutdownStarted: make(chan struct{}),
+		shutdownDone:    make(chan struct{}),
 		idle:            idle,
 		analyzerFactory: NewAnalyzer,
 		frameGrabber:    media.GrabFrame,
@@ -290,8 +294,9 @@ func (r *Runner) IsClosed() bool {
 }
 
 // Done is closed when shutdown begins (not when it finishes). Close itself is
-// idempotent and blocks until in-flight work has exited.
-func (r *Runner) Done() <-chan struct{} { return r.closedDone }
+// idempotent and blocks until in-flight work has exited; callers that need to
+// wait for completion should call Close (or wait on shutdownDone internally).
+func (r *Runner) Done() <-chan struct{} { return r.shutdownStarted }
 
 // canWriteDB guards finalizer writes from work abandoned by a shutdown timeout.
 func (r *Runner) canWriteDB() bool {
@@ -362,6 +367,7 @@ func (r *Runner) Start(taskID uint) error {
 	if existing, ok := r.tasks[taskID]; ok {
 		select {
 		case <-existing.done: // stale entry from a loop that just exited
+			existing.replaced = true
 			delete(r.tasks, taskID)
 		default:
 			r.mu.Unlock()
@@ -383,6 +389,8 @@ func (r *Runner) Start(taskID uint) error {
 	r.mu.Unlock()
 
 	var task model.AITask
+	var previousStatus string
+	var previousEnabled bool
 	var initErr error
 	if err := r.db.First(&task, taskID).Error; err != nil {
 		initErr = fmt.Errorf("ai task_id=%d load failed: %w", taskID, err)
@@ -390,9 +398,12 @@ func (r *Runner) Start(taskID uint) error {
 	// Keep the historical side effect of Start: starting a task also marks it
 	// enabled in the UI. Recovery never relies on enabled to decide what to run.
 	if initErr == nil {
+		previousStatus, previousEnabled = task.Status, task.Enabled
 		if err := r.db.Model(&model.AITask{}).Where("id = ?", taskID).
 			Updates(map[string]any{"status": "running", "enabled": true}).Error; err != nil {
 			initErr = fmt.Errorf("ai task_id=%d running status update failed: %w", taskID, err)
+		} else if r.startDBUpdatedHook != nil {
+			r.startDBUpdatedHook()
 		}
 	}
 
@@ -411,17 +422,24 @@ func (r *Runner) Start(taskID uint) error {
 	// Reserve the loop slot and check the closed flag atomically: a shutdown
 	// between the DB work and this point must not launch an execution.
 	r.mu.Lock()
-	if r.closed || r.tasks[taskID] != state || !r.trackLocked(1) {
-		r.mu.Unlock()
+	aborted := r.closed || r.tasks[taskID] != state || !r.trackLocked(1)
+	// Only an instance that was not superseded by a newer Start may roll back
+	// the status it wrote. Close clears the tasks map itself, so map membership
+	// is not a reliable ownership signal during a concurrent shutdown.
+	ownsState := !state.replaced
+	r.mu.Unlock()
+	if aborted {
 		state.initErr = ErrRunnerClosed
 		close(state.started)
 		cancel()
 		close(state.done)
 		r.dropState(state)
+		if ownsState && initErr == nil {
+			r.rollbackStartStatus(taskID, previousStatus, previousEnabled)
+		}
 		log.Printf("[ai] task_id=%d start aborted: runner is shutting down", taskID)
 		return ErrRunnerClosed
 	}
-	r.mu.Unlock()
 	close(state.started)
 	go func() {
 		defer r.finishTrack()
@@ -438,6 +456,27 @@ func (r *Runner) dropState(state *runnerState) {
 		delete(r.tasks, state.id)
 	}
 	r.mu.Unlock()
+}
+
+// rollbackStartStatus restores the task status written by a Start that was
+// interrupted by shutdown before its loop launched. The conditional WHERE
+// prevents overwriting a newer state (for example a concurrent Stop), and the
+// enabled flag is restored only together with a still-running row.
+func (r *Runner) rollbackStartStatus(taskID uint, status string, enabled bool) {
+	if status == "" {
+		status = "stopped"
+	}
+	res := r.db.Model(&model.AITask{}).
+		Where("id = ? AND status = ?", taskID, "running").
+		Updates(map[string]any{"status": status, "enabled": enabled})
+	if res.Error != nil {
+		atomic.AddInt64(&r.taskStatusFailures, 1)
+		log.Printf("[ai] ALERT task_id=%d rollback of interrupted start failed: %v", taskID, res.Error)
+		return
+	}
+	if res.RowsAffected == 0 {
+		log.Printf("[ai] task_id=%d interrupted start: status already changed by another operation", taskID)
+	}
 }
 
 // Stop cancels a running task, waits for its loop to exit, and records
@@ -476,13 +515,17 @@ func (r *Runner) Stop(taskID uint) {
 func (r *Runner) Close() {
 	r.mu.Lock()
 	if r.closed {
-		done := r.closedDone
+		done := r.shutdownDone
 		r.mu.Unlock()
 		<-done
 		return
 	}
 	r.closed = true
-	close(r.closedDone)
+	close(r.shutdownStarted)
+	// Only the first caller performs cleanup. shutdownDone is closed after the
+	// cleanup (including the timeout path) so concurrent Close callers really
+	// wait for completion instead of returning as soon as shutdown begins.
+	defer close(r.shutdownDone)
 	idle := r.idleLocked()
 	states := make([]*runnerState, 0, len(r.tasks))
 	for _, state := range r.tasks {

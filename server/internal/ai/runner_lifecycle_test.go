@@ -488,3 +488,152 @@ func TestLifecycleDBClosedWhileTaskRunning(t *testing.T) {
 		t.Fatal("failed finalizer writes were not surfaced")
 	}
 }
+
+// Split shutdown signals: Done fires as soon as shutdown starts, while a
+// concurrent Close must wait until cleanup has actually completed.
+func TestLifecycleConcurrentCloseWaitsForCompletion(t *testing.T) {
+	runWithInterval(t, time.Hour)
+	db := newRunnerTestDB(t)
+	taskID, _ := seedRunnerTask(t, db, `{"intervalSec":0}`)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	analyzer := &fakeAnalyzer{fn: func(ctx context.Context, _ AnalyzeInput) ([]Result, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return nil, ctx.Err()
+	}}
+	r := NewRunnerWithOptions(db, nil, RunnerOptions{TaskTimeout: 5 * time.Second, ShutdownTimeout: 2 * time.Second})
+	r.SetAnalyzerFactory(func(model.AIProvider) (Analyzer, error) { return analyzer, nil })
+	if err := r.Start(taskID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("analyzer never started")
+	}
+
+	firstDone := make(chan struct{})
+	go func() { r.Close(); close(firstDone) }()
+	select {
+	case <-r.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done was not closed when shutdown started")
+	}
+	secondDone := make(chan struct{})
+	go func() { r.Close(); close(secondDone) }()
+	select {
+	case <-secondDone:
+		t.Fatal("second Close returned before cleanup completed")
+	case <-time.After(120 * time.Millisecond):
+	}
+	select {
+	case <-firstDone:
+		t.Fatal("first Close returned before cleanup completed")
+	default:
+	}
+	close(release)
+	waitClose(t, 3*time.Second, func() {
+		<-firstDone
+		<-secondDone
+	})
+	assertQuietRunner(t, r)
+}
+
+// A Start interrupted between persisting "running" and launching its loop
+// must roll that status back conditionally, leaving no false running task.
+func TestLifecycleStartCloseDBStateConsistency(t *testing.T) {
+	runWithInterval(t, time.Hour)
+	db := newRunnerTestDB(t)
+	taskID, _ := seedRunnerTask(t, db, `{"intervalSec":0}`)
+	updated := make(chan struct{})
+	release := make(chan struct{})
+	r := NewRunnerWithOptions(db, nil, RunnerOptions{TaskTimeout: time.Second, ShutdownTimeout: 2 * time.Second})
+	r.startDBUpdatedHook = func() {
+		select {
+		case <-updated:
+		default:
+			close(updated)
+		}
+		<-release
+	}
+	r.SetAnalyzerFactory(func(model.AIProvider) (Analyzer, error) {
+		return &fakeAnalyzer{fn: func(context.Context, AnalyzeInput) ([]Result, error) {
+			t.Error("analysis must not run for a Start interrupted by Close")
+			return nil, nil
+		}}, nil
+	})
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- r.Start(taskID) }()
+	select {
+	case <-updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start never persisted the running status")
+	}
+	closeDone := make(chan struct{})
+	go func() { r.Close(); close(closeDone) }()
+	select {
+	case <-r.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Close did not enter shutdown")
+	}
+	close(release)
+	if err := <-startErr; !errors.Is(err, ErrRunnerClosed) {
+		t.Fatalf("interrupted Start error = %v, want ErrRunnerClosed", err)
+	}
+	<-closeDone
+
+	var task model.AITask
+	if err := db.First(&task, taskID).Error; err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if task.Status == "running" {
+		t.Fatal("interrupted Start left a false running status in the database")
+	}
+	if task.Status != "stopped" {
+		t.Fatalf("task status = %q, want stopped", task.Status)
+	}
+	if !task.Enabled {
+		t.Fatal("interrupted Start lost the task's previous enabled flag")
+	}
+	if runs := runsFor(t, db, taskID); len(runs) != 0 {
+		t.Fatalf("interrupted Start created %d run records", len(runs))
+	}
+	assertQuietRunner(t, r)
+}
+
+// Concurrent Start/Close stress: no false running status, no duplicate runs,
+// no leftover state or goroutines across 100 rounds.
+func TestLifecycleConcurrentStartCloseStress(t *testing.T) {
+	runWithInterval(t, time.Hour)
+	db := newRunnerTestDB(t)
+	for i := 0; i < 100; i++ {
+		taskID, _ := seedRunnerTask(t, db, `{"intervalSec":0}`)
+		r := NewRunnerWithOptions(db, nil, RunnerOptions{TaskTimeout: time.Second, ShutdownTimeout: 2 * time.Second})
+		r.SetAnalyzerFactory(func(model.AIProvider) (Analyzer, error) {
+			return &fakeAnalyzer{fn: func(context.Context, AnalyzeInput) ([]Result, error) {
+				return []Result{{EventType: "person"}}, nil
+			}}, nil
+		})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = r.Start(taskID) }()
+		go func() { defer wg.Done(); r.Close() }()
+		wg.Wait()
+		assertQuietRunner(t, r)
+		var task model.AITask
+		if err := db.First(&task, taskID).Error; err != nil {
+			t.Fatalf("round %d reload task: %v", i, err)
+		}
+		if task.Status == "running" {
+			t.Fatalf("round %d left a false running status", i)
+		}
+		if runs := runsFor(t, db, taskID); len(runs) > 1 {
+			t.Fatalf("round %d created %d run records", i, len(runs))
+		}
+	}
+}
