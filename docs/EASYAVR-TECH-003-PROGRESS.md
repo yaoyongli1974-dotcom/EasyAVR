@@ -130,3 +130,14 @@
 
 ### 遗留问题（报告中已标记）
 - 生产实例/业务库按约束未演练；`transaction_timeout` 版本偏差告警分支本次退出 0 但未单独取证；pgvector、大规模/并发写入、外部 KMS 取回主密钥流程未覆盖。
+
+---
+
+## 补充审查 TASK-016：Linux 快照安全降级路径
+
+状态：**已完成并通过验证**。
+
+- 文件：`server/internal/snapshot/openat_linux.go`（修改）、`server/internal/snapshot/openat_linux_test.go`（新增）。
+- `openFallback` 不再通过字符串路径 `os.OpenRoot(r.dir)` 重新打开根目录；改为基于 `newSnapshotRoot()` 固定的 `r.fd`，用逐级 `unix.Openat(O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW)` 解析各中间目录，末级使用 `snapshotOpenFlags` 打开，全部中间 fd 及时关闭。
+- `splitFallbackPath` 做词法自保：拒绝绝对路径、空段、`.`/`..`、尾部斜杠；任何 errno 继续经 `snapshotOpenError` 区分 ENOENT / 逃逸 / 符号链接 / 权限，不统一当作文件不存在。
+- 新增测试钩子 `forceFallbackForTest`；测试覆盖降级端到端、父目录/末级符号链接、`../` 逃逸、目录/FIFO 非普通文件、根目录重命名后经固定 fd 访问、根目录并发 rename/replace 1000 轮竞态（不得读到根外哨兵内容）。
