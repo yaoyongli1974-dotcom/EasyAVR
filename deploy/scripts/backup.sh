@@ -5,6 +5,9 @@
 # sqlite3.Connection.backup() 做在线备份；不要改成 `sqlite3 .backup` 或 cp，
 # 前者在目标机上不存在，后者在 WAL 下拿到的是不一致快照。
 #
+# 备份完成后做两道验证：gzip -t 与解压后的 PRAGMA integrity_check。
+# 验证失败时保留 .part 文件并报错退出，绝不把坏备份发布成正式文件。
+#
 # 可配置项（环境变量，均可选，默认值即生产机实际路径）：
 #   DB          SQLite 数据库路径，默认 /opt/easyavr/server/data/easyavr.db
 #   BACKUP_DIR  备份输出目录，默认 /var/backups/easyavr
@@ -20,9 +23,27 @@ DB=${DB:-/opt/easyavr/server/data/easyavr.db}
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/easyavr}
 KEEP=${KEEP:-7}
 ENV_FILE=${ENV_FILE:-/etc/easyavr/env}
+KEEP_PARTS=0
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
-die() { log "FAILED: $*"; exit 1; }
+die() { KEEP_PARTS=1; log "FAILED: $*"; exit 1; }
+
+# 打印 integrity_check 全部结果行；只有唯一一行 "ok" 才算通过。
+integrity_check() {
+  python3 - "$1" <<'PY'
+import sqlite3
+import sys
+
+con = sqlite3.connect(sys.argv[1])
+try:
+    rows = con.execute("PRAGMA integrity_check").fetchall()
+finally:
+    con.close()
+text = "\n".join(str(row[0]) for row in rows)
+print(text)
+sys.exit(0 if text.strip().lower() == "ok" else 1)
+PY
+}
 
 if ! [[ $KEEP =~ ^[1-9][0-9]*$ ]]; then
   die "KEEP must be a positive integer, got: $KEEP"
@@ -41,10 +62,29 @@ fi
 TS=$(date '+%Y%m%d-%H%M%S')
 PART_DB="$BACKUP_DIR/.easyavr-$TS.db.part"
 PART_ENV="$BACKUP_DIR/.env-$TS.gz.part"
+VERIFY_DB="$BACKUP_DIR/.verify-$TS.db"
 
-cleanup() { rm -f -- "${PART_DB:-}" "${PART_DB:-}.gz" "${PART_ENV:-}"; }
+cleanup() {
+  if [[ -n ${VERIFY_DB:-} ]]; then
+    rm -f -- "$VERIFY_DB"
+  fi
+  if (( KEEP_PARTS == 1 )); then
+    local -a kept=()
+    local f
+    for f in "${PART_DB:-}" "${PART_DB:-}.gz" "${PART_ENV:-}"; do
+      if [[ -n $f && -f $f ]]; then
+        kept+=("$f")
+      fi
+    done
+    if (( ${#kept[@]} > 0 )); then
+      log "kept partial files for inspection: ${kept[*]}"
+    fi
+  else
+    rm -f -- "${PART_DB:-}" "${PART_DB:-}.gz" "${PART_ENV:-}"
+  fi
+}
 trap cleanup EXIT
-trap 'log "FAILED at line $LINENO: $BASH_COMMAND"' ERR
+trap 'KEEP_PARTS=1; log "FAILED at line $LINENO: $BASH_COMMAND"' ERR
 
 if [[ ! -f $DB ]]; then
   log "database not found: $DB (nothing to back up)"
@@ -83,18 +123,34 @@ finally:
 PY
 
 gzip -9 -- "$PART_DB" || die "gzip failed for database backup"
+
+# 校验先于发布：任何一步失败都保留 .part 并以非 0 退出，正式备份不出现。
+log "verify: gzip -t $PART_DB.gz"
+gzip -t -- "$PART_DB.gz" || die "gzip -t failed for database backup"
+log "verify: gzip -t ok"
+
+gunzip -c -- "$PART_DB.gz" >"$VERIFY_DB" || die "cannot decompress database backup for verification"
+CHECK=''
+if CHECK=$(integrity_check "$VERIFY_DB"); then
+  log "verify: PRAGMA integrity_check=$CHECK"
+else
+  die "PRAGMA integrity_check failed: $CHECK"
+fi
+rm -f -- "$VERIFY_DB"
+
 DB_OUT="$BACKUP_DIR/easyavr-$TS.db.gz"
 mv -f -- "$PART_DB.gz" "$DB_OUT"
 [[ -s $DB_OUT ]] || die "database backup is empty after gzip: $DB_OUT"
-log "database backup: $DB_OUT ($(stat -c '%s' -- "$DB_OUT") bytes)"
+log "database backup: $DB_OUT ($(stat -c '%s' -- "$DB_OUT") bytes, verified gzip+integrity)"
 
 if [[ -f $ENV_FILE ]]; then
   gzip -9 -c -- "$ENV_FILE" >"$PART_ENV" || die "cannot gzip $ENV_FILE"
   [[ -s $PART_ENV ]] || die "env backup is empty: $PART_ENV"
+  gzip -t -- "$PART_ENV" || die "gzip -t failed for env backup"
   chmod 0600 -- "$PART_ENV"
   ENV_OUT="$BACKUP_DIR/env-$TS.gz"
   mv -f -- "$PART_ENV" "$ENV_OUT"
-  log "env backup: $ENV_OUT ($(stat -c '%s' -- "$ENV_OUT") bytes)"
+  log "env backup: $ENV_OUT ($(stat -c '%s' -- "$ENV_OUT") bytes, verify: gzip -t ok)"
 else
   log "env file not found: $ENV_FILE (skipped)"
 fi

@@ -162,6 +162,7 @@ make run-pg      # 用本地 PostgreSQL 运行后端
 - **全局功能搜索**：顶栏「功能搜索 (Ctrl+K)」按名称/关键词快速跳转功能模块。
 - **平台配置**：管理页「平台配置」可运行时启停 GB28181/EHOME/GB35114 信令、配置 GB35114 安全 SIP 监听端口，并查看播放鉴权/运维参数，无需改环境变量重启；环境变量仍作为首次启动默认值。
 - **集群**：节点心跳 + 设备级最少负载调度（`/cluster/stats` 展示各节点设备数）。
+- **健康检查**：公开 `GET /api/v1/healthz`（仅 liveness）与 `GET /api/v1/readyz`（readiness：DB 不可用时 503，ZLM/存储告警只报告不判死）；JWT 保护的 `GET /api/v1/health/details` 给出逐项检查耗时与存储快照，均不返回配置值或凭据。
 - **开放 API**：第三方/APP 通过 `/api/v1/open/*` 访问设备/通道/资源/事件（`X-API-Key`，scope 读写 + 限速 + 每日配额 + 审计），OpenAPI 文档见 `GET /api/v1/openapi.json`。见「开放 API」页。
 
 ## 端到端验证

@@ -11,3 +11,8 @@ MAILTO=""
 
 # 每 5 分钟检查 systemd 单元与 /api/v1/healthz，连续失败 3 次自动重启
 */5 * * * * root /opt/easyavr/deploy/scripts/healthcheck.sh >> /var/log/easyavr-health.log 2>&1
+
+# PostgreSQL 备份（仅在 EASYAVR_DB_DRIVER=postgres 时使用；下面是注释示例，按需取消注释）
+# DSN 含口令，不要写进本文件；放到 root 可读的 0600 文件（如 /etc/easyavr/pg-backup.env）。
+# 凭据加密密钥 EASYAVR_CREDENTIAL_KEY 必须独立备份，不能和 DB 备份放同一处。
+# 30 4 * * * root bash -c 'set -a; . /etc/easyavr/pg-backup.env; set +a; PG_BACKUP_DIR=/var/backups/easyavr/pg /opt/easyavr/deploy/scripts/pg_backup.sh' >> /var/log/easyavr-pg-backup.log 2>&1

@@ -23,6 +23,8 @@ func (a *App) buildRouter() *gin.Engine {
 
 	api := r.Group("/api/v1")
 	api.GET("/healthz", a.healthz)
+	// Readiness probe: DB/storage are core; ZLM/AI/GB failures are reported but non-fatal.
+	api.GET("/readyz", a.readyz)
 	// Public playback auth helpers (edge / ZLMediaKit on_play hook).
 	api.GET("/play/verify", a.verifyPlay)
 	api.POST("/zlm/on_play", a.zlmOnPlay)
@@ -39,6 +41,7 @@ func (a *App) buildRouter() *gin.Engine {
 	authed.Use(a.auditLog())
 
 	authed.GET("/auth/profile", a.profile)
+	authed.GET("/health/details", a.healthzDetailed)
 	authed.POST("/auth/password", a.changePassword)
 	authed.GET("/playback/config", a.playbackConfig)
 

@@ -663,3 +663,11 @@
 - **验证**：`gofmt` 干净；`cd server && go test ./...`、`go vet ./...` 全绿；`cd web && npm run build` 通过；新增快照保留、录像生命周期、storage 模块测试全过。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：等待人工审查；第六批 TASK-013（备份恢复）/TASK-014（统一健康检查）需审查通过后另行确认。
+
+### 2026-11-24（EASYAVR-TECH-001 第六批：备份恢复 + 统一健康检查）
+- **已完成**（第一批至第六批全部批次收官）：
+  - **TASK-013**：`deploy/scripts/backup.sh` 发布前增加 gzip -t + PRAGMA integrity_check 双层校验（失败保留 .part、不发布、不轮转）；新增 `restore.sh`（默认 dry-run、`--yes` 才执行、恢复前自动留安全副本、同目录临时文件原子替换、保留 mode/owner）；新增 `pg_backup.sh`（pg_dump -Fc + pg_restore -l 校验 + PG_KEEP 轮转 + DSN 日志脱敏）与 `pg_restore.sh`（默认 dry-run、`-j4 --clean --if-exists`、DSN 不写日志）；deploy/README.md 与 cron 示例同步。
+  - **TASK-014**：新增 `GET /api/v1/readyz`（公开，DB SELECT 1 为唯一硬失败，503 + degraded；ZLM/存储/AI/GB/GB35114/后台任务仅报告）与 `GET /api/v1/health/details`（JWT，逐检查耗时 + 完整 storage 快照）；不序列化任何配置值、DSN 或凭据。handler_health_test.go 覆盖 DB 关闭、ZLM 不可达、磁盘告警不影响就绪、无密钥泄露。
+- **验证通过**：`bash -n deploy/scripts/*.sh`；SQLite 备份→恢复往返（dry-run 不改库、`--yes` 恢复行数/mode 正确、损坏 gzip 拒绝恢复、损坏备份不发布）；PG stub 演练参数拼装/轮转/DSN 脱敏；`go test ./...`、`go vet ./...`、`npm run build` 全绿。
+- **当前状态**：完成（已提交，尚未推送）
+- **下一步**：生产环境需人工配置凭据加密密钥独立备份、真实 PG 恢复演练、停服演练；真机摄像机复跑视频冒烟。

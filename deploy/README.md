@@ -12,7 +12,9 @@
 | `deploy/nginx/easyavr.cn.conf` | 独立 nginx 用的完整站点（80→301 + 443）；本机是 1Panel/openresty，只取 443 段落作参考。 |
 | `deploy/nginx/easyavr.cn.http.conf` | 现网在用的版本：仅 80，放进 1Panel 的 `conf.d`。 |
 | `deploy/systemd/easyavr.service` | 后端单元，`WorkingDirectory=/opt/easyavr/server`。 |
-| `deploy/scripts/backup.sh` | SQLite + env 热备份，按份数轮转（默认保留 7 份）。 |
+| `deploy/scripts/backup.sh` | SQLite + env 热备份，按份数轮转（默认保留 7 份），发布前做 gzip + `PRAGMA integrity_check` 验证。 |
+| `deploy/scripts/restore.sh` | SQLite 备份恢复：默认 dry-run，`--yes` 才执行；先留安全副本，再原子替换。 |
+| `deploy/scripts/pg_backup.sh` / `pg_restore.sh` | PostgreSQL `pg_dump -Fc` 备份与 `pg_restore -j4 --clean --if-exists` 恢复（默认 dry-run）。 |
 | `deploy/scripts/healthcheck.sh` | 单元/端点存活探测，连续失败 3 次重启服务。 |
 | `deploy/cron.d/easyavr` | `/etc/cron.d` 片段，驱动上面两个脚本。 |
 | `deploy/logrotate/easyavr` | 切割两个 cron 日志（weekly / 4 份 / 压缩）。 |
@@ -339,3 +341,85 @@ logrotate -d /etc/logrotate.d/easyavr     # 干跑，确认配置被解析
 ```
 
 `squid` 之类的通用规则不覆盖这两个文件，必须是上面这条独立配置（weekly / 保留 4 份 / 压缩）。备份目录本身受份数上限约束，不受日志增长影响。
+
+## 备份恢复、完整性校验与 PG 备份（TASK-013）
+
+本节是追加说明，不替代上面的现网操作流程。新增脚本一并安装：
+
+```bash
+install -m 0755 deploy/scripts/backup.sh deploy/scripts/restore.sh \
+  deploy/scripts/pg_backup.sh deploy/scripts/pg_restore.sh \
+  deploy/scripts/healthcheck.sh /opt/easyavr/deploy/scripts/
+```
+
+### SQLite 备份的完整性与失败语义
+
+`backup.sh` 在发布正式文件之前依次做 `gzip -t` 和**解压后**的 `PRAGMA integrity_check`；日志会打印两行校验结果：
+
+```text
+... verify: gzip -t ok
+... verify: PRAGMA integrity_check=ok
+```
+
+任一步失败：保留 `.easyavr-<TS>.db.part` / `.db.gz.part` 供排查，报错以非 0 退出，**不生成** `easyavr-<TS>.db.gz`，也不会轮转掉旧备份。手工复核任一备份：
+
+```bash
+gzip -t /var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz
+gunzip -c /var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz > /tmp/check.db
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute("PRAGMA integrity_check").fetchone()[0])' /tmp/check.db
+# 期望输出 ok；最后删除 /tmp/check.db
+```
+
+### SQLite 恢复（推荐用脚本，别再手工 gunzip 覆盖）
+
+```bash
+BK=/var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz
+DB=/opt/easyavr/server/data/easyavr.db
+
+systemctl stop easyavr
+/opt/easyavr/deploy/scripts/restore.sh -f "$BK" -d "$DB"            # 默认 dry-run：只校验并打印计划
+/opt/easyavr/deploy/scripts/restore.sh -f "$BK" -d "$DB" --yes      # 确认计划后执行
+systemctl start easyavr && curl -fsS http://127.0.0.1:18000/api/v1/readyz   # readyz 会查 DB SELECT 1
+```
+
+脚本会先打印 `verify: gzip -t ok`，再打印替换前/后的 `PRAGMA integrity_check` 结果；**恢复前**自动留 `easyavr.db.before-restore-<TS>-<PID>` 安全副本，权限沿用旧库（新路径为 0640）。它只做同目录 `.restore.tmp` → `mv` 的原子替换，绝不删除业务数据，也**不碰 `-wal` / `-shm`**：若目标旁存在残留会打印警告，仍需人工在停服务状态下处理，避免旧 WAL 回放覆盖恢复结果。`env-*.gz` 仍按需人工 `gunzip` 回 `/etc/easyavr/env` 并保持 `0640 root:easyavr`。
+
+### PostgreSQL 备份与恢复
+
+仅当 `EASYAVR_DB_DRIVER=postgres` 时使用；DSN 写在 root 可读的 0600 文件里，脚本日志不输出 DSN/口令。
+
+```bash
+# 备份：pg_dump -Fc + timestamp 文件 + 非空/pg_restore -l 校验 + PG_KEEP 轮转
+PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
+PG_BACKUP_DIR=/var/backups/easyavr/pg PG_KEEP=7 \
+  /opt/easyavr/deploy/scripts/pg_backup.sh
+
+# 恢复：默认 dry-run；--yes 才执行 pg_restore -j4 --clean --if-exists
+PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
+  /opt/easyavr/deploy/scripts/pg_restore.sh \
+  -f /var/backups/easyavr/pg/easyavr-pg-YYYYmmdd-HHMMSS-NNN.dump     # dry-run，打印计划
+PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
+  /opt/easyavr/deploy/scripts/pg_restore.sh \
+  -f /var/backups/easyavr/pg/easyavr-pg-YYYYmmdd-HHMMSS-NNN.dump --yes
+```
+
+`pg_restore.sh` 也接受 `-d <DSN>` 覆盖环境变量；并行度用 `PG_RESTORE_JOBS` 调整（默认 4）。`--clean --if-exists` 会 DROP 目标库中已有对象，执行前务必确认已备份。恢复完成后用 `/api/v1/readyz`（含 DB `SELECT 1`）和只读查询验证。
+
+### 凭据加密密钥必须独立备份
+
+`EASYAVR_CREDENTIAL_KEY` 是数据库里设备密码 / API Key / 对象存储密钥等密文的主密钥（`enc:<kid>:...`）。**它绝不能和 DB 备份放在同一个目录或同一份归档里**：库备份泄露 + 同处密钥 = 全部凭据明文泄露；库备份泄露而密钥在别处 = 密文不可解。用 `openssl rand -base64 32` 生成后写入 0600、root 专属文件，存放到与 `/var/backups/easyavr`（含 PG 子目录）物理分离的位置（如密码管理器 / 异地密钥库），轮换方法见 `deploy/env.example` 顶部注释。
+
+### cron 示例（追加，不要覆盖历史条目）
+
+向现有 `/etc/cron.d/easyavr` **追加**新行，不要重建文件；文件必须以换行结尾、属主 root 且不可组/其他可写：
+
+```bash
+cat >> /etc/cron.d/easyavr <<'EOF'
+
+# 每天 04:30 PostgreSQL 备份（仅 postgres 部署；DSN 不写在本文件）
+# 30 4 * * * root bash -c 'set -a; . /etc/easyavr/pg-backup.env; set +a; PG_BACKUP_DIR=/var/backups/easyavr/pg /opt/easyavr/deploy/scripts/pg_backup.sh' >> /var/log/easyavr-pg-backup.log 2>&1
+EOF
+chmod 0644 /etc/cron.d/easyavr
+```
+
+SQLite 的每日 03:30 备份与健康检查条目已在 `deploy/cron.d/easyavr` 中，追加时保留原样。`pg-backup.env` 内容示例：`PG_DSN='postgres://...'`，权限 0600 root:root。
