@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # EasyAVR PostgreSQL 恢复：pg_restore -j4 --clean --if-exists。
 #
-# !!! EASYAVR_CREDENTIAL_KEY 必须独立备份，不能和 DB 备份放在同一处。
+# !!! EASYAVR_CREDENTIAL_KEY 必须独立备份，不能和 DB 备份放在同一处
+# !!! （主密钥由人工/外部 KMS 管理，不进入 /var/backups/easyavr 任何子目录）。
+# !!! 本脚本不生成任何新密钥：恢复前必须人工把原密钥恢复到 /etc/easyavr/env。
+# !!! 原密钥丢失后 enc:<kid>:... 密文不可恢复，绝不能用新密钥替代。
 #
 # --clean --if-exists 会 DROP 库中已有对象，务必先确认已备份；
 # 默认 dry-run，只有 --yes 才真正连接数据库执行恢复。
@@ -67,6 +70,8 @@ fi
 
 [[ -f $BACKUP ]] || die "backup file not found: $BACKUP"
 [[ -s $BACKUP ]] || die "backup file is empty: $BACKUP"
+
+log "REMINDER: restore the original EASYAVR_CREDENTIAL_KEY manually before starting the service; this script never creates or rotates keys (lost key = encrypted credentials unrecoverable)"
 
 log "verify: dump file is non-empty ($(stat -c '%s' -- "$BACKUP") bytes)"
 LIST=$(mktemp)

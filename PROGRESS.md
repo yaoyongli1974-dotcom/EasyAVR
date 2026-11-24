@@ -687,3 +687,11 @@
 - **现状定位**：`security/credential.go` 仍按明文 `enc:` 前缀跳过加密（TASK-001 待修）；`deploy/scripts/backup.sh` 仍将整个 env 文件备份到 DB 目录（TASK-002 待修）；`handler_snapshot.go` 的签名访问解析令牌后丢弃 UserID 且未做实时权限复核（TASK-003 待修）；AI Runner/健康检查/密钥强度待逐批核查。
 - **当前状态**：完成（基线检查）
 - **下一步**：按批次依次执行 TASK-001/002 → 003 → 004/005 → 006 → 007/008 → 009/010，每批独立提交，不自动推送。
+
+### 2026-11-24（EASYAVR-TECH-002 第一批：TASK-001、TASK-002）
+- **已完成**：
+  - TASK-001：`Encrypt()` 删除按明文 `enc:` 前缀跳过加密的逻辑，所有非空明文均真实 AES-256-GCM 加密；`EncryptStrings` 以真实解密成功判定幂等，GORM 重复保存不二次加密；迁移层 `migrateValue` 改为按结构+真实解密判断存量密文/明文，伪造 `enc:` 明文被加密并校验，无法解密的疑似密文 fail-closed。
+  - TASK-002：备份拆为 DB（`db/`）/ PG（`pg/`）/ 非敏感配置白名单（`config/`）三层；不再备份整个 env、不生成 `env-*.gz`；主密钥只走人工独立流程，恢复脚本绝不生成/替换密钥；SQLite 一致性备份、完整性校验、轮转与权限限制保留。
+- **验证**：`gofmt -l` 干净；`cd server && go test ./...` 全绿、`go vet ./...` 零输出；`bash -n deploy/scripts/*.sh` 全过；合成 env 53 项 + PG stub 14 项备份/轮转/脱敏断言全 PASS；`npm run build` 通过。
+- **当前状态**：完成（分支提交，未推送）
+- **下一步**：第二批 TASK-003 快照签名 URL 实时权限复核。

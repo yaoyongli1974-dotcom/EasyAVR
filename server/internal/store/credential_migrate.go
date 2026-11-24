@@ -102,25 +102,30 @@ func migrateColumn(db *gorm.DB, table, column string, enc *security.Encryptor) e
 }
 
 func migrateValue(value string, enc *security.Encryptor) (string, error) {
-	if !strings.HasPrefix(value, "enc:") {
-		cipher, err := enc.Encrypt(value)
-		if err != nil {
-			return "", err
-		}
-		plain, err := enc.Decrypt(cipher)
-		if err != nil || plain != value {
-			return "", fmt.Errorf("encryption verification failed: %w", err)
-		}
-		return cipher, nil
-	}
+	// Decide by actually decrypting, never by trusting an "enc:" prefix in the
+	// stored value (a legacy plaintext password may itself start with "enc:").
+	// A structurally encrypted value that fails to decrypt is a hard error.
+	parts := strings.SplitN(value, ":", 3)
+	structured := len(parts) == 3 && parts[0] == "enc" && parts[1] != ""
 	plain, err := enc.Decrypt(value)
-	if err != nil {
+	if err == nil {
+		if !strings.HasPrefix(value, "enc:"+enc.KeyID()+":") {
+			return enc.Encrypt(plain)
+		}
+		return value, nil
+	}
+	if structured {
 		return "", err
 	}
-	if !strings.HasPrefix(value, "enc:"+enc.KeyID()+":") {
-		return enc.Encrypt(plain)
+	cipher, encErr := enc.Encrypt(value)
+	if encErr != nil {
+		return "", encErr
 	}
-	return value, nil
+	check, decErr := enc.Decrypt(cipher)
+	if decErr != nil || check != value {
+		return "", fmt.Errorf("encryption verification failed: %w", decErr)
+	}
+	return cipher, nil
 }
 
 func valueString(v any) string {

@@ -9,6 +9,12 @@ import (
 // Credential fields are encrypted transparently at the persistence layer.
 // API keys that are stored only as hashes (User.PasswordHash, APIKey.KeyHash)
 // are deliberately not included here.
+//
+// BeforeSave delegates to security.EncryptStrings, which is idempotent: a field
+// that already holds decryptable ciphertext is left untouched, so saving the
+// same instance twice never double-encrypts. AfterFind delegates to
+// security.DecryptStrings, which decrypts exactly once and fails closed on
+// malformed, tampered, unknown-key or legacy-plaintext values.
 
 func (d *Device) BeforeSave(*gorm.DB) error     { return security.EncryptStrings(&d.Password) }
 func (d *Device) AfterFind(*gorm.DB) error      { return security.DecryptStrings(&d.Password) }

@@ -12,11 +12,11 @@
 | `deploy/nginx/easyavr.cn.conf` | 独立 nginx 用的完整站点（80→301 + 443）；本机是 1Panel/openresty，只取 443 段落作参考。 |
 | `deploy/nginx/easyavr.cn.http.conf` | 现网在用的版本：仅 80，放进 1Panel 的 `conf.d`。 |
 | `deploy/systemd/easyavr.service` | 后端单元，`WorkingDirectory=/opt/easyavr/server`。 |
-| `deploy/scripts/backup.sh` | SQLite + env 热备份，按份数轮转（默认保留 7 份），发布前做 gzip + `PRAGMA integrity_check` 验证。 |
-| `deploy/scripts/restore.sh` | SQLite 备份恢复：默认 dry-run，`--yes` 才执行；先留安全副本，再原子替换。 |
-| `deploy/scripts/pg_backup.sh` / `pg_restore.sh` | PostgreSQL `pg_dump -Fc` 备份与 `pg_restore -j4 --clean --if-exists` 恢复（默认 dry-run）。 |
+| `deploy/scripts/backup.sh` | SQLite 一致性备份 → `db/`，非敏感配置白名单备份 → `config/`（各保留 7 份），发布前做 gzip + `PRAGMA integrity_check` 验证；**不打包整个 env**，不含任何密钥/口令。 |
+| `deploy/scripts/restore.sh` | SQLite 备份恢复：默认 dry-run，`--yes` 才执行；先留安全副本，再原子替换；不生成/轮换任何密钥。 |
+| `deploy/scripts/pg_backup.sh` / `pg_restore.sh` | PostgreSQL `pg_dump -Fc` → `pg/` 与 `pg_restore -j4 --clean --if-exists` 恢复（默认 dry-run）；不生成密钥。 |
 | `deploy/scripts/healthcheck.sh` | 单元/端点存活探测，连续失败 3 次重启服务。 |
-| `deploy/cron.d/easyavr` | `/etc/cron.d` 片段，驱动上面两个脚本。 |
+| `deploy/cron.d/easyavr` | `/etc/cron.d` 片段，驱动备份/恢复相关脚本与健康检查（密钥流程不在 cron 里）。 |
 | `deploy/logrotate/easyavr` | 切割两个 cron 日志（weekly / 4 份 / 压缩）。 |
 | `deploy/env.example` | 环境变量模板，键名与 `config.go` 一致。 |
 | `site/README.md` | 官网静态站的本地预览与约束备忘。 |
@@ -94,11 +94,11 @@ cd /opt/easyavr/server            # 或本地 server/ 目录
 go run ./cmd/auditscrub -driver sqlite -dsn ./data/easyavr.db
 # 确认命中数后，人工备份并执行脱敏（SQLite 会自动生成备份文件）：
 go run ./cmd/auditscrub -driver sqlite -dsn ./data/easyavr.db \
-  -apply -yes -backup /var/backups/easyavr/audit-scrub-$(date +%F).db
+  -apply -yes -backup /var/backups/easyavr/db/audit-scrub-$(date +%F).db
 # PostgreSQL：先用 pg_dump 备份，再传备份文件路径（工具不会替你生成 PG 备份）：
-pg_dump "$EASYAVR_DB_DSN" -f /var/backups/easyavr/audit-scrub.sql
+pg_dump "$EASYAVR_DB_DSN" -f /var/backups/easyavr/pg/audit-scrub.sql
 go run ./cmd/auditscrub -driver postgres -dsn "$EASYAVR_DB_DSN" \
-  -apply -yes -backup /var/backups/easyavr/audit-scrub.sql
+  -apply -yes -backup /var/backups/easyavr/pg/audit-scrub.sql
 ```
 
 工具只处理 `request_body` 命中密码/密钥类关键词的行（大小写不敏感），每次最多 500 行（`-limit` 可调整），拒绝缺少 `--yes` 或备份文件/路径的执行；SQLite 备份通过 `VACUUM INTO` 创建且目标已存在时拒绝覆盖。生产库执行前仍须按人工流程完成备份审批，工具不会自动连接生产环境。
@@ -286,14 +286,22 @@ install -m 0755 new/easyavr /opt/easyavr/server/bin/easyavr && systemctl restart
 
 ### 备份与健康检查
 
-两个脚本覆盖生产机的日常运维，由 `deploy/cron.d/easyavr` 驱动。
+日常运维由 `deploy/cron.d/easyavr` 驱动，备份分三层存放（EASYAVR-TECH-002 / TASK-002）：
+
+| 层 | 位置 | 内容 | 谁负责 |
+|---|---|---|---|
+| DB | `/var/backups/easyavr/db/` | `easyavr-YYYYmmdd-HHMMSS.db.gz`（SQLite）/ `easyavr-pg-*.dump`（PG 装在 `pg/`） | `backup.sh` / `pg_backup.sh` 自动 |
+| 配置 | `/var/backups/easyavr/config/` | `config-YYYYmmdd-HHMMSS.gz`，**仅白名单非敏感键** | `backup.sh` 自动 |
+| 主密钥 | 密码管理器 / 外部 KMS / 独立离线介质 | `EASYAVR_CREDENTIAL_KEY`，可以配合 `EASYAVR_CREDENTIAL_KEY_ID` / `_PREVIOUS` | **只能人工**，绝不进上述任何目录 |
 
 | 脚本 | 用途 | 触发 |
 |---|---|---|
-| `deploy/scripts/backup.sh` | 用 python3 的 `sqlite3.Connection.backup()` 热备 SQLite（WAL 下 `cp` 会拿到不一致快照，生产机也没有 `sqlite3` 命令），同时把 `/etc/easyavr/env` 压成 `env-*.gz`（0600）；每类只留最近 `KEEP` 份（默认 7）。 | 每天 03:30 |
+| `deploy/scripts/backup.sh` | 用 python3 的 `sqlite3.Connection.backup()` 热备 SQLite（WAL 下 `cp` 会拿到不一致快照，生产机也没有 `sqlite3` 命令）到 `db/`；另用显式白名单从 `/etc/easyavr/env` 提取非敏感键压成 `config/*.gz`（0600）。每类只留最近 `KEEP` 份（默认 7）。 | 每天 03:30 |
 | `deploy/scripts/healthcheck.sh` | 查 `systemctl is-active easyavr` 与 `/api/v1/healthz` 里的 `"code":0`；失败计数写 `/var/tmp/easyavr-healthcheck.fails`，**连续 3 次**才重启，成功后清零。 | 每 5 分钟 |
 
-产物固定在 `/var/backups/easyavr`：`easyavr-YYYYmmdd-HHMMSS.db.gz` 与 `env-YYYYmmdd-HHMMSS.gz`。目录 0700，脚本用 `flock` 防止备份重叠。可配置项（环境变量）：`DB`、`BACKUP_DIR`、`KEEP`、`ENV_FILE`；健康检查侧是 `SERVICE`、`HEALTH_URL`、`STATE_FILE`、`MAX_FAILS`、`RESTART_CMD`。
+配置备份的白名单在 `backup.sh` 的 `CONFIG_KEYS` 数组里显式列出（如 `EASYAVR_ENV`、`EASYAVR_LISTEN`、`EASYAVR_DB_DRIVER`、`EASYAVR_ZLM_API`、`EASYAVR_ALLOW_ORIGIN`、`EASYAVR_MONITOR_SEC`、`EASYAVR_MEDIA_HOST` 等）。**不在白名单的未知变量不写；任何 `*_KEY` / `*_SECRET` / `*_PASSWORD` / `*_TOKEN`（以及 `EASYAVR_CREDENTIAL_KEY_ID` / `_PREVIOUS` 这类变体）即使出现在 env 里也不写**；生成器还会检查白名单输出里不能出现任何秘密变量的取值，否则拒绝发布。已不再产生 `env-*.gz`：整份 env 从不被打包。
+
+产物固定在 `/var/backups/easyavr/{db,config,pg}`：DB 为 `easyavr-YYYYmmdd-HHMMSS.db.gz`，配置为 `config-YYYYmmdd-HHMMSS.gz`，PG 为 `pg/easyavr-pg-*.dump`。各目录 0700、文件 0600，脚本用 `flock` 防止备份重叠；轮转只删各自目录里自己生成的文件，因此不可能误删主密钥（它根本不在这些目录）。可配置项（环境变量）：`DB`、`BACKUP_DIR`（备份根，默认 `/var/backups/easyavr`）、`DB_BACKUP_DIR`、`CONFIG_BACKUP_DIR`、`KEEP`、`ENV_FILE`；健康检查侧是 `SERVICE`、`HEALTH_URL`、`STATE_FILE`、`MAX_FAILS`、`RESTART_CMD`。
 
 **安装**
 
@@ -309,9 +317,11 @@ chmod 0644 /etc/cron.d/easyavr
 **手动验证一次**
 
 ```bash
-/opt/easyavr/deploy/scripts/backup.sh      # 应输出 4~5 行带时间戳日志，末尾打印大小与份数
+/opt/easyavr/deploy/scripts/backup.sh      # 末尾打印 db_dir / config_dir / 各自份数
 /opt/easyavr/deploy/scripts/healthcheck.sh # 正常时输出一行 "... ok"
-gzip -t /var/backups/easyavr/easyavr-*.db.gz && echo gzip-ok
+gzip -t /var/backups/easyavr/db/easyavr-*.db.gz && echo db-gzip-ok
+gzip -t /var/backups/easyavr/config/config-*.gz && echo config-gzip-ok
+gunzip -c /var/backups/easyavr/config/config-*.gz | grep -E 'KEY|SECRET|PASSWORD|TOKEN' && echo LEAK || echo no-secrets
 systemctl status easyavr --no-pager | head -3
 ```
 
@@ -320,16 +330,19 @@ systemctl status easyavr --no-pager | head -3
 **恢复**
 
 ```bash
+# 0) 先确认原主密钥已由人工恢复到 /etc/easyavr/env（或外部 KMS 注入），
+#    且 EASYAVR_CREDENTIAL_KEY_ID / _PREVIOUS 与备份时的 kid 一致。
+#    密钥丢失则 enc:<kid>:... 加密凭据不可恢复；任何脚本都不会生成新密钥替代。
 systemctl stop easyavr
 cp /opt/easyavr/server/data/easyavr.db /root/easyavr.db.before-restore   # 先留底
 rm -f /opt/easyavr/server/data/easyavr.db-wal /opt/easyavr/server/data/easyavr.db-shm
-gunzip -c /var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz > /opt/easyavr/server/data/easyavr.db
+gunzip -c /var/backups/easyavr/db/easyavr-YYYYmmdd-HHMMSS.db.gz > /opt/easyavr/server/data/easyavr.db
 chown easyavr:easyavr /opt/easyavr/server/data/easyavr.db
 chmod 0640 /opt/easyavr/server/data/easyavr.db
 systemctl start easyavr && curl -fsS http://127.0.0.1:18000/api/v1/healthz
 ```
 
-必须在停服务后删掉残留的 `-wal`/`-shm`：否则 SQLite 会把旧 WAL 回放到刚恢复的库上，数据对不上。`env-*.gz` 同理 `gunzip` 回 `/etc/easyavr/env` 并保持 `0640 root:easyavr`。
+必须在停服务后删掉残留的 `-wal`/`-shm`：否则 SQLite 会把旧 WAL 回放到刚恢复的库上，数据对不上。配置备份 `config-*.gz` 只含白名单非敏感键，**不能**用来还原整份 `/etc/easyavr/env`；env 和主密钥都必须人工按密码管理器/KMS 中的记录恢复（`/etc/easyavr/env` 保持 `0640 root:easyavr`）。
 
 **日志**
 
@@ -364,8 +377,8 @@ install -m 0755 deploy/scripts/backup.sh deploy/scripts/restore.sh \
 任一步失败：保留 `.easyavr-<TS>.db.part` / `.db.gz.part` 供排查，报错以非 0 退出，**不生成** `easyavr-<TS>.db.gz`，也不会轮转掉旧备份。手工复核任一备份：
 
 ```bash
-gzip -t /var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz
-gunzip -c /var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz > /tmp/check.db
+gzip -t /var/backups/easyavr/db/easyavr-YYYYmmdd-HHMMSS.db.gz
+gunzip -c /var/backups/easyavr/db/easyavr-YYYYmmdd-HHMMSS.db.gz > /tmp/check.db
 python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute("PRAGMA integrity_check").fetchone()[0])' /tmp/check.db
 # 期望输出 ok；最后删除 /tmp/check.db
 ```
@@ -373,7 +386,7 @@ python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute(
 ### SQLite 恢复（推荐用脚本，别再手工 gunzip 覆盖）
 
 ```bash
-BK=/var/backups/easyavr/easyavr-YYYYmmdd-HHMMSS.db.gz
+BK=/var/backups/easyavr/db/easyavr-YYYYmmdd-HHMMSS.db.gz
 DB=/opt/easyavr/server/data/easyavr.db
 
 systemctl stop easyavr
@@ -382,7 +395,7 @@ systemctl stop easyavr
 systemctl start easyavr && curl -fsS http://127.0.0.1:18000/api/v1/readyz   # readyz 会查 DB SELECT 1
 ```
 
-脚本会先打印 `verify: gzip -t ok`，再打印替换前/后的 `PRAGMA integrity_check` 结果；**恢复前**自动留 `easyavr.db.before-restore-<TS>-<PID>` 安全副本，权限沿用旧库（新路径为 0640）。它只做同目录 `.restore.tmp` → `mv` 的原子替换，绝不删除业务数据，也**不碰 `-wal` / `-shm`**：若目标旁存在残留会打印警告，仍需人工在停服务状态下处理，避免旧 WAL 回放覆盖恢复结果。`env-*.gz` 仍按需人工 `gunzip` 回 `/etc/easyavr/env` 并保持 `0640 root:easyavr`。
+脚本会先打印 `verify: gzip -t ok`，再打印替换前/后的 `PRAGMA integrity_check` 结果；**恢复前**自动留 `easyavr.db.before-restore-<TS>-<PID>` 安全副本，权限沿用旧库（新路径为 0640）。它只做同目录 `.restore.tmp` → `mv` 的原子替换，绝不删除业务数据，也**不碰 `-wal` / `-shm`**：若目标旁存在残留会打印警告，仍需人工在停服务状态下处理，避免旧 WAL 回放覆盖恢复结果。脚本每次运行都会打印主密钥提醒，但**不会生成新密钥、也不会改写 env**：恢复前必须人工恢复原 `EASYAVR_CREDENTIAL_KEY`，否则库里的加密凭据全部解不开；白名单配置备份不能替代 env 还原。
 
 ### PostgreSQL 备份与恢复
 
@@ -407,9 +420,13 @@ PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
 
 > 版本偏差：PostgreSQL 17 的 `pg_dump` 会在归档里写入服务端未知参数 `SET transaction_timeout = 0`；恢复到 PG 16 及更旧服务端时 `pg_restore` 会把它列为 ignored error 并非零退出，但**数据已完整恢复**。`pg_restore.sh` 只对这一条已知告警放行并打印 WARNING，其他错误仍判定失败。长期方案是让备份客户端版本与生产服务端一致。
 
-### 凭据加密密钥必须独立备份
+### 三层备份与主密钥独立流程（EASYAVR-TECH-002 / TASK-002）
 
-`EASYAVR_CREDENTIAL_KEY` 是数据库里设备密码 / API Key / 对象存储密钥等密文的主密钥（`enc:<kid>:...`）。**它绝不能和 DB 备份放在同一个目录或同一份归档里**：库备份泄露 + 同处密钥 = 全部凭据明文泄露；库备份泄露而密钥在别处 = 密文不可解。用 `openssl rand -base64 32` 生成后写入 0600、root 专属文件，存放到与 `/var/backups/easyavr`（含 PG 子目录）物理分离的位置（如密码管理器 / 异地密钥库），轮换方法见 `deploy/env.example` 顶部注释。
+1. **DB 层**：SQLite 一致性快照落在 `/var/backups/easyavr/db`（PG 的 `pg_dump -Fc` 落在 `/var/backups/easyavr/pg`）。文件 0600、目录 0700。
+2. **配置层**：`/var/backups/easyavr/config/config-*.gz` 由 `backup.sh` 通过显式白名单生成，只含 `EASYAVR_ENV`、`EASYAVR_ZLM_API`、`EASYAVR_ALLOW_ORIGIN`、`EASYAVR_MONITOR_SEC` 等非秘密项，便于确认运行参数；它不是 env 的完整副本，不可用于还原整份环境。
+3. **密钥层**：`EASYAVR_CREDENTIAL_KEY` 是设备密码 / AI Provider API Key / 对象存储密钥等密文（`enc:<kid>:...`）的主密钥，只能由人工或外部 KMS 备份到与 `/var/backups/easyavr`（含 `db/`、`pg/`、`config/`）**物理分离**的位置，例如密码管理器或异地密钥库。备份时用 `openssl rand -base64 32` 生成并写入 0600、root 专属文件；同时记录 `EASYAVR_CREDENTIAL_KEY_ID` 与轮换时的 `EASYAVR_CREDENTIAL_KEY_PREVIOUS`（轮换方法见 `deploy/env.example` 顶部注释）。
+
+风险边界：库备份泄露 + 同处密钥 = 全部凭据明文泄露；库备份泄露而密钥在别处 = 密文不可解；**密钥丢失则加密凭据不可恢复**。`backup.sh` 不打包整份 env，`pg_backup.sh` 只导出数据库，任何脚本都不会把主密钥写进备份目录或归档。恢复数据库前必须先由人工把原密钥恢复到 `/etc/easyavr/env`（或由 KMS 注入），两个 `restore.sh` / `pg_restore.sh` 只打印提醒、绝不生成新密钥——用新密钥只能让所有 `enc:<kid>:...` 行解密失败。轮换密钥时按 `EASYAVR_CREDENTIAL_KEY_PREVIOUS=<kid>:<旧密钥>` 启动一次，让服务自动用旧 kid 解密、新 kid 重加密，之后再移除旧项。
 
 ### cron 示例（追加，不要覆盖历史条目）
 
@@ -424,4 +441,4 @@ EOF
 chmod 0644 /etc/cron.d/easyavr
 ```
 
-SQLite 的每日 03:30 备份与健康检查条目已在 `deploy/cron.d/easyavr` 中，追加时保留原样。`pg-backup.env` 内容示例：`PG_DSN='postgres://...'`，权限 0600 root:root。
+SQLite 的每日 03:30 备份与健康检查条目已在 `deploy/cron.d/easyavr` 中，追加时保留原样。同一条 `backup.sh` 任务会同时写 `db/`（SQLite）与 `config/`（白名单配置），无需另加 cron 行；`pg-backup.env` 内容示例：`PG_DSN='postgres://...'`，权限 0600 root:root。主密钥**不通过 cron 备份**，只在人工/KMS 流程里处理。

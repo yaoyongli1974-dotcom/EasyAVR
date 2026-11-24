@@ -138,3 +138,27 @@ func TestCredentialMigrationOnCopiedDatabase(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateValueEncryptsEncPrefixedPlaintext(t *testing.T) {
+	e, err := security.New("migration-key", "v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, plain := range []string{"enc:camera-password-123", "enc:", "enc:abc"} {
+		got, err := migrateValue(plain, e)
+		if err != nil {
+			t.Fatalf("migrateValue(%q): %v", plain, err)
+		}
+		if !strings.HasPrefix(got, "enc:v1:") || got == plain {
+			t.Fatalf("plaintext was not encrypted: %q -> %q", plain, got)
+		}
+		back, err := e.Decrypt(got)
+		if err != nil || back != plain {
+			t.Fatalf("roundtrip(%q): %q, %v", plain, back, err)
+		}
+	}
+	// A structurally valid but undecryptable value must fail closed.
+	if _, err := migrateValue("enc:v1:AAAA", e); err == nil {
+		t.Fatal("tampered ciphertext was accepted as plaintext")
+	}
+}

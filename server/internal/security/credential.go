@@ -78,10 +78,13 @@ func New(primaryKey, kid string, previous []string) (*Encryptor, error) {
 // KeyID returns the ID embedded into newly created ciphertexts.
 func (e *Encryptor) KeyID() string { return e.kid }
 
-// Encrypt returns "enc:<kid>:<base64(nonce||ciphertext)>".
+// Encrypt returns "enc:<kid>:<base64(nonce||ciphertext)>" with a fresh random
+// nonce for every call. Every non-empty value is really encrypted, including
+// strings that merely start with "enc:" — only the empty string is returned
+// unchanged.
 func (e *Encryptor) Encrypt(plaintext string) (string, error) {
-	if plaintext == "" || strings.HasPrefix(plaintext, "enc:") {
-		return plaintext, nil
+	if plaintext == "" {
+		return "", nil
 	}
 	key := e.keys[e.kid]
 	block, err := aes.NewCipher(key[:])
@@ -148,7 +151,12 @@ func SetDefault(e *Encryptor) { defaultEncryptor.Store(e) }
 // Default returns the process-wide encryptor, or nil when unset (development).
 func Default() *Encryptor { return defaultEncryptor.Load() }
 
-// EncryptStrings encrypts each non-empty field in place.
+// EncryptStrings encrypts each non-empty field in place. GORM BeforeSave hooks
+// may be invoked on an instance whose field already holds ciphertext (for
+// example when the same instance is saved twice without an intervening
+// AfterFind). Such a field is left untouched only when it genuinely decrypts
+// under a known key — never based on the "enc:" prefix — so a repeated save
+// cannot double-encrypt while a fake "enc:" plaintext is still encrypted.
 func EncryptStrings(fields ...*string) error {
 	e := Default()
 	if e == nil {
@@ -156,6 +164,9 @@ func EncryptStrings(fields ...*string) error {
 	}
 	for _, f := range fields {
 		if f == nil || *f == "" {
+			continue
+		}
+		if _, err := e.Decrypt(*f); err == nil {
 			continue
 		}
 		v, err := e.Encrypt(*f)

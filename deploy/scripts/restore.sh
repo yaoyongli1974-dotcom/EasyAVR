@@ -10,8 +10,15 @@
 #   - 不删除任何业务数据，也绝不碰 -wal / -shm 残留——若有残留会给出警告，
 #     由人工停服务后处理，否则旧 WAL 可能回放覆盖刚恢复的库。
 #
+# 主密钥（EASYAVR-TECH-002 / TASK-002）：
+#   - 本脚本永远不会生成新密钥，也不会改写 /etc/easyavr/env；
+#   - 库里是 AES-256-GCM 密文，必须由人工先把原 EASYAVR_CREDENTIAL_KEY
+#     恢复到 /etc/easyavr/env（或外部 KMS 注入），再启动服务；
+#   - 原密钥丢失则加密凭据不可恢复，切勿用新密钥"顶上"——那只会让
+#     所有 enc:<kid>:... 行解密失败。
+#
 # 示例：
-#   restore.sh -f /var/backups/easyavr/easyavr-20261124-030000.db.gz \
+#   restore.sh -f /var/backups/easyavr/db/easyavr-20261124-030000.db.gz \
 #              -d /opt/easyavr/server/data/easyavr.db --dry-run
 #   restore.sh -f ... -d ... --yes
 
@@ -89,6 +96,8 @@ if [[ -e $TARGET && ! -f $TARGET ]]; then
 fi
 TARGET_DIR=$(dirname -- "$TARGET")
 [[ -d $TARGET_DIR ]] || die "target directory not found: $TARGET_DIR"
+
+log "REMINDER: restore the original EASYAVR_CREDENTIAL_KEY manually before starting the service; this script never creates or rotates keys (lost key = encrypted credentials unrecoverable)"
 
 for suffix in -wal -shm; do
   if [[ -e "$TARGET$suffix" ]]; then
