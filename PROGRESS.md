@@ -597,3 +597,13 @@
   2. 本机 PostgreSQL 是旧快照（22 张表、无 `audit_logs`），且 `easyavr_ro` 只读角色不能执行 AutoMigrate；本批无 schema 变更故兼容性不受影响，但**PG 实际迁移验证尚未执行**（需在可写 PG 环境补测）。
   3. 未对生产服务器做任何配置/凭据改动；运行期密钥轮换重启后失效属设计约定。
 - **当前状态**：第一批完成并验收，按任务书停止，等待人工审查后再进入第二批（TASK-002/003）。
+
+### 2026-11-24（第一批遗留项处置）
+- **已完成**：
+  - **历史审计敏感数据**：新增 `server/internal/audittool` + `server/cmd/auditscrub`，默认 dry-run（只报命中数和样例 ID，不写库）；脱敏必须同时给 `--apply --yes --backup`，SQLite 用 `VACUUM INTO` 自动生成备份且拒绝覆盖已有文件，PG 要求先由运维用 `pg_dump` 生成备份文件；每次最多 500 行（`-limit` 可调），只把命中密码/密钥类关键词的 `request_body` 置空，不触碰其他审计字段。`deploy/README.md` 记录完整命令。本地开发库 dry-run 命中 0 条；合成库 CLI 实测命中/脱敏/备份/幂等均正确。
+  - **PostgreSQL 迁移验证**：新增 `server/internal/store/postgres_migration_test.go`（设置 `EASYAVR_TEST_PG_DSN` 才运行），验证 `audit_logs` 全部字段在真实 PG 上 AutoMigrate 成功且重复迁移安全。用本地容器的临时库 `easyavr_migverify_*` 实测通过，临时库已删除；业务库 `easyavr` 未被触碰。
+- **验证结果**：`go build ./...` 通过；`go test ./internal/audittool/... -v` 3 项全绿；PG 临时库 `go test ./internal/store -run TestPostgresMigration -v` PASS；`auditscrub` 对开发库 dry-run 与合成库 apply 均按预期工作。
+- **仍需人工/后续批次**：
+  1. 生产库的历史审计脱敏须由运维按 `deploy/README.md` 审批、备份后执行（本工具不会自动连生产库）。
+  2. GB28181 运行期密钥轮换重启后失效是既定设计；持久化为避免明文落盘，留到第二批凭据加密后实现；生产凭据修改仍须人工。
+- **当前状态**：第一批遗留项中本地可解决的两项已解决；等待人工审查后进入第二批（TASK-002/003）。

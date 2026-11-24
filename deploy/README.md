@@ -85,11 +85,42 @@ ORDER BY id DESC LIMIT 100;
 
 确认存在敏感行时：先按「备份与健康检查」做一次完整备份，再由人工执行脱敏（例如 `UPDATE audit_logs SET request_body = '' WHERE ...`），**不要**由自动化任务直接改写历史审计数据。审计写入失败不会中断业务请求，错误以 `[audit] write failed` 前缀写入服务日志（journald），运维可据此监控。
 
+也可使用随仓库提供的 `auditscrub` 工具（默认只扫描、不改数据）：
+
+```bash
+cd /opt/easyavr/server            # 或本地 server/ 目录
+go run ./cmd/auditscrub -driver sqlite -dsn ./data/easyavr.db
+# 确认命中数后，人工备份并执行脱敏（SQLite 会自动生成备份文件）：
+go run ./cmd/auditscrub -driver sqlite -dsn ./data/easyavr.db \
+  -apply -yes -backup /var/backups/easyavr/audit-scrub-$(date +%F).db
+# PostgreSQL：先用 pg_dump 备份，再传备份文件路径（工具不会替你生成 PG 备份）：
+pg_dump "$EASYAVR_DB_DSN" -f /var/backups/easyavr/audit-scrub.sql
+go run ./cmd/auditscrub -driver postgres -dsn "$EASYAVR_DB_DSN" \
+  -apply -yes -backup /var/backups/easyavr/audit-scrub.sql
+```
+
+工具只处理 `request_body` 命中密码/密钥类关键词的行（大小写不敏感），每次最多 500 行（`-limit` 可调整），拒绝缺少 `--yes` 或备份文件/路径的执行；SQLite 备份通过 `VACUUM INTO` 创建且目标已存在时拒绝覆盖。生产库执行前仍须按人工流程完成备份审批，工具不会自动连接生产环境。
+
 ### GB28181 SIP 密钥配置（TASK-004）
 
 - `GET /api/v1/gb/config` 与 `GET /api/v1/config/platform` **不返回密码明文**，只返回 `passwordConfigured` 布尔值；前端只显示「已配置（不回显）/未配置」。
 - 管理员可通过 `PUT /api/v1/gb/config/password`（body `{"password":"..."}`）修改运行中的 SIP 摘要认证密码：对**后续 REGISTER 鉴权立即生效**，无需重启 SIP 服务；已注册设备保持原会话，重新注册时改用新密码。
-- 该修改是**运行期**变更，服务重启后恢复为环境变量 `EASYAVR_GB_PASSWORD` 的值。要持久化，须由人工修改 `/etc/easyavr/env` 并重启服务；自动化流程不得改动生产凭据。
+- 该修改是**运行期**变更，服务重启后恢复为环境变量 `EASYAVR_GB_PASSWORD` 的值。要持久化，须由人工修改 `/etc/easyavr/env` 并重启服务；自动化流程不得改动生产凭据。第二批实现凭据加密存储后，再评估把轮换写入加密配置（避免明文落盘）。
+
+### PostgreSQL 迁移验证（TASK-001 遗留项）
+
+自动迁移由 `store.OpenWith` 中的 GORM `AutoMigrate` 执行；SQLite 与 PostgreSQL 共用同一份模型定义。要在真实 PG 上验证（使用**临时库**，不要拿业务库做实验）：
+
+```bash
+# 本地开发容器：POSTGRES_USER=easyavr，已发布到 127.0.0.1:5432
+docker exec easyavr-postgres psql -U easyavr -d postgres -c 'CREATE DATABASE easyavr_migverify;'
+cd server
+EASYAVR_TEST_PG_DSN='postgres://easyavr:easyavr@127.0.0.1:5432/easyavr_migverify?sslmode=disable' \
+  go test ./internal/store -run TestPostgresMigration -v
+docker exec easyavr-postgres psql -U easyavr -d postgres -c 'DROP DATABASE IF EXISTS easyavr_migverify;'
+```
+
+该测试验证 `audit_logs` 及其全部字段在 PG 上建表成功、且重复执行迁移安全（不设置 `EASYAVR_TEST_PG_DSN` 时自动跳过）。
 
 ## 可选组件
 
