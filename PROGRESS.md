@@ -680,3 +680,10 @@
 - **验证**：`bash -n deploy/scripts/*.sh` 通过；备份/恢复/轮换均实际执行；演练库与临时进程已全部清理；上一批的 `go test ./...`、`go vet ./...`、`npm run build` 结果仍有效（本批未改 Go/前端）。
 - **当前状态**：完成（已提交，尚未推送）
 - **下一步**：真实摄像头接入复跑 `scripts/smoke-video-e2e.sh`；生产环境独立备份主密钥；浏览器点击联调新增 UI。
+
+### 2026-11-24（EASYAVR-TECH-002 TASK-000 基线检查）
+- **基线**：main @ `287a007cd4624e7c8eeaef1e8ec2c87e5d4f1468`，工作区干净；已按任务书建议创建分支 `feature/easyavr-tech-002-security-reliability`。
+- **基线测试**：`cd server && go test ./...` 全绿、`go vet ./...` 零输出；`cd web && npm run build` 通过（仅既有 chunk 警告）。
+- **现状定位**：`security/credential.go` 仍按明文 `enc:` 前缀跳过加密（TASK-001 待修）；`deploy/scripts/backup.sh` 仍将整个 env 文件备份到 DB 目录（TASK-002 待修）；`handler_snapshot.go` 的签名访问解析令牌后丢弃 UserID 且未做实时权限复核（TASK-003 待修）；AI Runner/健康检查/密钥强度待逐批核查。
+- **当前状态**：完成（基线检查）
+- **下一步**：按批次依次执行 TASK-001/002 → 003 → 004/005 → 006 → 007/008 → 009/010，每批独立提交，不自动推送。
