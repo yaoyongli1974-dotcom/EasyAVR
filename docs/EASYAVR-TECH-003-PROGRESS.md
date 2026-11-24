@@ -13,7 +13,7 @@
 |---|---|
 | TASK-011 AI Runner 并发可靠性 | 已完成并通过验证（本批次） |
 | TASK-012 快照父目录符号链接竞态 | 已完成并通过验证（Linux；Windows 全仓构建受既有 storage 问题限制） |
-| TASK-013 PostgreSQL 真实备份恢复 | 待执行 |
+| TASK-013 PostgreSQL 真实备份恢复 | 已完成并通过验证（隔离测试库真实演练） |
 | TASK-014 GB28181 真实设备互通 | 待执行 |
 | TASK-015 视频稳定性与压力测试 | 待执行 |
 
@@ -105,3 +105,28 @@
 
 - `GOOS=windows GOARCH=amd64 go build ./...` 仍失败于**既有** `internal/storage/storage.go` 的 `syscall.Statfs_t`（TECH-001 TASK-010 引入），非本次改动；本批次按写入范围未修改它，留待单独批次修复。
 - TASK-013～TASK-015 按本次指令未执行；前端无改动，未执行 `npm run build`。
+
+---
+
+## TASK-013：PostgreSQL 真实备份恢复与一致性验证
+
+状态：**已完成并通过验证**（本机隔离一次性测试库真实演练；生产与业务库未连接）。
+
+### 修改/新增文件
+- `deploy/scripts/verify-tech003-postgres.sh`（新增，525 行）：显式 `PG_TEST_DSN` 安全门，维护库名白名单（仅允许自建 `easyavr_pg003_*`，拒绝业务库/生产样式库名）；自建自删源/目标库；用平台 AutoMigrate 建表并经 API/GORM 加密 hook 写入用户/设备/通道/Provider/AI 任务/快照/录像/审计/平台配置；运行 `pg_backup.sh`、`pg_restore.sh` dry-run 与 `--yes`；比较列/索引/约束/行数/关联/密文；验证 v1→v2 密钥轮换与错误密钥 fail-closed；trap 清理进程、临时文件与测试库。
+- `deploy/README.md`：登记演练脚本、脱敏用法、安全边界与报告链接。
+- `docs/testing/postgres-backup-restore-report.md`（新增）：真实命令、退出码、两轮结果、问题修复、SKIP/待验证清单。
+- `server/internal/recording/catalog_test.go`：修复既有时间依赖夹具（`fakeZLM` 现在仅在首次请求的日期返回录制文件，避免当前日期下 `syncRecent` 产生重复编目）；未跳过测试。
+
+### 真实演练结果（本机 docker easyavr-postgres，一次性库）
+- 未传 `PG_TEST_DSN`：`exit 2 / SKIP=1`；指向生产样式库名：建库前拒绝，`exit 1`。
+- 第一轮演练暴露脚本自身 3 类缺陷（目录查询排序/类型拼接导致假 PASS、`gb.enabled` 键名错误、脱敏审计误报），修复后第二轮：**`exit 0 / PASS=70 FAIL=0 SKIP=0 CLEANUP_WARN=0`**。
+- 实测：48 张表、550 列、149 索引、49 约束一致；备份目录 445 行、权限 0600；dry-run 零写入；10 张关键表行数/关联一致；错误密钥 fail-closed 且不改写密文；v1→v2 共 2 行重加密；日志无秘密字面值；两个一次性库与 18009/18010 进程均已清理。
+
+### 执行过的测试与结果
+- `bash -n deploy/scripts/*.sh scripts/*.sh`：PASS。
+- `cd server && go test ./...`：PASS（含修复后的 recording 套件）；`go vet ./...`：零输出；`cd web && npm run build`：PASS（无前端改动）。
+- 真实 PG 演练命令与退出码见 `docs/testing/postgres-backup-restore-report.md`。
+
+### 遗留问题（报告中已标记）
+- 生产实例/业务库按约束未演练；`transaction_timeout` 版本偏差告警分支本次退出 0 但未单独取证；pgvector、大规模/并发写入、外部 KMS 取回主密钥流程未覆盖。

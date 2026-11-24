@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,12 +20,24 @@ import (
 func fakeZLM(t *testing.T, paths []string) (*httptest.Server, *[]string) {
 	t.Helper()
 	var deleted []string
+	var mu sync.Mutex
+	var activePeriod string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/getMp4RecordFile"):
+			period := r.FormValue("period")
+			mu.Lock()
+			if activePeriod == "" {
+				activePeriod = period
+			}
+			visible := paths
+			if period != activePeriod {
+				visible = nil
+			}
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"code": 0,
-				"data": map[string]any{"rootPath": "/record/2026-10-24/", "paths": paths},
+				"data": map[string]any{"rootPath": "/record/" + activePeriod + "/", "paths": visible},
 			})
 		case strings.HasSuffix(r.URL.Path, "/deleteRecordDirectory"):
 			deleted = append(deleted, r.FormValue("period"))

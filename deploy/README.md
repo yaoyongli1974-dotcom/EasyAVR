@@ -15,6 +15,7 @@
 | `deploy/scripts/backup.sh` | SQLite 一致性备份 → `db/`，非敏感配置白名单备份 → `config/`（各保留 7 份），发布前做 gzip + `PRAGMA integrity_check` 验证；**不打包整个 env**，不含任何密钥/口令。 |
 | `deploy/scripts/restore.sh` | SQLite 备份恢复：默认 dry-run，`--yes` 才执行；先留安全副本，再原子替换；不生成/轮换任何密钥。 |
 | `deploy/scripts/pg_backup.sh` / `pg_restore.sh` | PostgreSQL `pg_dump -Fc` → `pg/` 与 `pg_restore -j4 --clean --if-exists` 恢复（默认 dry-run）；不生成密钥。 |
+| `deploy/scripts/verify-tech003-postgres.sh` | TASK-013 隔离演练：显式 `PG_TEST_DSN` 才运行，自建/自删 `easyavr_pg003_*` 一次性库，真实跑备份→dry-run→恢复→校验→密钥轮换与错误密钥 fail-closed；不碰业务库，密钥只在进程内。 |
 | `deploy/scripts/healthcheck.sh` | 单元/端点存活探测，连续失败 3 次重启服务。 |
 | `deploy/cron.d/easyavr` | `/etc/cron.d` 片段，驱动备份/恢复相关脚本与健康检查（密钥流程不在 cron 里）。 |
 | `deploy/logrotate/easyavr` | 切割两个 cron 日志（weekly / 4 份 / 压缩）。 |
@@ -419,6 +420,18 @@ PG_DSN='postgres://user:pass@127.0.0.1:5432/easyavr?sslmode=disable' \
 `pg_restore.sh` 也接受 `-d <DSN>` 覆盖环境变量；并行度用 `PG_RESTORE_JOBS` 调整（默认 4）。`--clean --if-exists` 会 DROP 目标库中已有对象，执行前务必确认已备份。恢复完成后用 `/api/v1/readyz`（含 DB `SELECT 1`）和只读查询验证。
 
 > 版本偏差：PostgreSQL 17 的 `pg_dump` 会在归档里写入服务端未知参数 `SET transaction_timeout = 0`；恢复到 PG 16 及更旧服务端时 `pg_restore` 会把它列为 ignored error 并非零退出，但**数据已完整恢复**。`pg_restore.sh` 只对这一条已知告警放行并打印 WARNING，其他错误仍判定失败。长期方案是让备份客户端版本与生产服务端一致。
+
+### 备份恢复隔离演练（TASK-013 验证脚本）
+
+真实演练不要拿业务库 `easyavr` 做实验。脚本只接受显式传入的**可写维护库** DSN，且维护库名必须是 `postgres`；源/目标库由脚本自建为 `easyavr_pg003_<随机>_src` / `_dst`，退出时 trap 停进程并 DROP。未传 `PG_TEST_DSN` 打印 SKIP 并以非 0 退出；任何指向 `easyavr` 或生产样式库名的 DSN 在建库前被拒绝。日志只打印脱敏 DSN，主密钥/口令只在演练进程的环境变量和 shell 变量中，不落文件。
+
+```bash
+PG_TEST_DSN='postgres://<可写维护账号>:<口令>@127.0.0.1:5432/postgres?sslmode=disable' \
+  bash deploy/scripts/verify-tech003-postgres.sh
+# 输出逐项 PASS / FAIL / SKIP，末尾 SUMMARY；有 FAIL 或清理告警则退出非 0。
+```
+
+演练内容：用 EasyAVR 自身（生产模式 + PG 驱动）AutoMigrate 建表并经 API/GORM hook 写入设备密码、AIProvider APIKey 等敏感数据，再跑 `pg_backup.sh`（非空/PGDMP 魔数/`pg_restore -l`/权限 0600）、`pg_restore.sh` dry-run（确认零写入）与 `--yes`，对比表结构/索引/约束/行数/关联与密文前缀，最后验证 v1 解密往返、错误密钥 fail-closed、v1→v2 轮换重加密。真实执行结果见 `docs/testing/postgres-backup-restore-report.md`。
 
 ### 三层备份与主密钥独立流程（EASYAVR-TECH-002 / TASK-002）
 
