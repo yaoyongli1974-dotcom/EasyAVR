@@ -745,3 +745,9 @@
 - **已完成**：`feature/easyavr-tech-003-reliability` 已推送到 GitHub；`main` 以 fast-forward 合并 `d367931..096091d`（14 个文件、+1528/-68，含 TASK-011 Runner 并发可靠性、TASK-012 快照安全打开、TASK-013 PostgreSQL 真实备份恢复演练与报告），并已 `git push origin main`。`origin/main` 指向 `096091d`，feature 分支保留在远端。
 - **当前状态**：完成（已推送 main）
 - **下一步**：人工审查 GitHub 提交；继续 TASK-014（GB28181 真实设备互通）与 TASK-015（视频稳定性/压力测试）需另行确认。
+
+### 2026-11-25（TECH-003 补充安全审查合并入 main）
+- **已完成**：`feature/easyavr-tech-003-security-followup`（3 个提交）以 fast-forward 合并入 `main`（`30832c1..1c8db68`，8 个文件、+863/−60），并推送 `origin/main`。feature 分支保留在 GitHub。
+- **内容**：TASK-016 Linux 快照降级路径固定 fd 逐级 openat；TASK-017 PG 演练 DSN 回环门禁与 CHECK_ONLY 自检；TASK-011 补充 Start/Stop/Close 三方并发压力测试。
+- **当前状态**：完成（已推送 main）
+- **下一步**：跟踪全量 `-race` 偶发抖动根因；按需推进 TASK-014/015 真实设备与视频稳定性验证。
